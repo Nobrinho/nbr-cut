@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Nbr Cortador: segredos e estado local (nunca versionar)
+*.session
+*.session-journal
+config.json
+.env
+*.spec
