@@ -19,9 +19,9 @@ from cortador.ui import tema
 def botao(pai, texto: str, comando: Callable[[], None], *, primario: bool = False, perigo: bool = False,
           largura: int = 140) -> ctk.CTkButton:
     if primario:
-        cores = dict(fg_color=tema.VERDE, hover_color=tema.VERDE_ESCURO, text_color="#06210c")
+        cores = dict(fg_color=tema.DESTAQUE, hover_color=tema.DESTAQUE_HOVER, text_color=tema.SOBRE_DESTAQUE)
     elif perigo:
-        cores = dict(fg_color="#3a1f22", hover_color="#53292d", text_color=tema.ERRO)
+        cores = dict(fg_color=tema.ERRO_FUNDO, hover_color=tema.ERRO_FUNDO_HOVER, text_color=tema.ERRO)
     else:
         cores = dict(fg_color=tema.PAINEL_2, hover_color=tema.BORDA, text_color=tema.TEXTO)
     return ctk.CTkButton(pai, text=texto, command=comando, width=largura, corner_radius=8, **cores)
@@ -110,12 +110,12 @@ class DialogoConfiguracoes(_Janela):
 
         self.var_premium = tk.BooleanVar(value=cfg.premium)
         ctk.CTkSwitch(corpo, text="Conta Telegram Premium (partes de até 4 GB)", variable=self.var_premium,
-                      command=self._premium_mudou, progress_color=tema.VERDE).pack(anchor="w", pady=(10, 6))
+                      command=self._premium_mudou, progress_color=tema.DESTAQUE).pack(anchor="w", pady=(10, 6))
         _suave(corpo, "Tamanho máximo de cada parte").pack(anchor="w")
         self.var_tamanho = tk.StringVar(value=self._rotulo_tamanho(cfg.tamanho_parte))
         self.menu_tamanho = ctk.CTkOptionMenu(
             corpo, variable=self.var_tamanho, values=self._opcoes(), width=160,
-            fg_color=tema.PAINEL_2, button_color=tema.BORDA, button_hover_color=tema.VERDE_ESCURO,
+            fg_color=tema.PAINEL_2, button_color=tema.BORDA, button_hover_color=tema.DESTAQUE_HOVER,
         )
         self.menu_tamanho.pack(anchor="w", pady=(2, 8))
 
@@ -174,7 +174,7 @@ class DialogoConfiguracoes(_Janela):
         for campo, valor in achados.items():
             mapa[campo].set(str(valor))
         self.rotulo_importacao.configure(
-            text=f"{len(achados)} campo(s) importado(s) — confira e salve", text_color=tema.VERDE)
+            text=f"{len(achados)} campo(s) importado(s) — confira e salve", text_color=tema.SUCESSO)
         self._mostrar_problemas(self._montar())
 
     def _montar(self) -> Configuracao:
@@ -303,7 +303,7 @@ class DialogoConfirmar(_Janela):
             ctk.CTkLabel(linha, text=rotulo, width=110, anchor="w", text_color=tema.TEXTO_SUAVE).pack(side="left")
             ctk.CTkLabel(linha, text=valor, anchor="w", justify="left", wraplength=400,
                          text_color=tema.TEXTO).pack(side="left", fill="x", expand=True)
-        aviso_cor = tema.ALERTA if teste else tema.VERDE
+        aviso_cor = tema.ALERTA if teste else tema.SUCESSO
         aviso = f"Será publicado no canal de {'TESTE' if teste else 'PRODUÇÃO'}: {destino}"
         ctk.CTkLabel(corpo, text=aviso, text_color=aviso_cor, font=ctk.CTkFont(weight="bold"),
                      wraplength=500, justify="left").pack(anchor="w", pady=(12, 0))

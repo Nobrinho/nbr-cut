@@ -1,4 +1,4 @@
-"""Janela principal do Nbr Cortador.
+"""Janela principal do NBR Cut.
 
 Esquerda: a fila de arquivos. Direita: o filme selecionado — busca no TMDB, nome padronizado, plano
 de corte, prévia da legenda e a postagem com progresso. Nada de regra de negócio aqui: ela vive em
@@ -70,7 +70,7 @@ class Aplicativo(ctk.CTk):
     def __init__(self, cfg: Configuracao):
         super().__init__()
         ctk.set_appearance_mode("dark")
-        self.title(f"Nbr Cortador {__version__}")
+        self.title(f"NBR Cut {__version__}")
         self.geometry("1260x820")
         self.minsize(1040, 700)
         self.configure(fg_color=tema.FUNDO)
@@ -124,6 +124,18 @@ class Aplicativo(ctk.CTk):
                     pass
                 return
 
+    def _carregar_logo(self):
+        """Marca NBR Play (PNG transparente do brand kit) no topo; sem ela o app segue só com o texto."""
+        for candidato in (Path(__file__).resolve().parent.parent / "assets" / "logo.png",
+                          Path(getattr(__import__("sys"), "_MEIPASS", ".")) / "logo.png"):
+            if candidato.is_file():
+                try:
+                    from PIL import Image
+                    return ctk.CTkImage(Image.open(candidato), size=(44, 44))
+                except Exception:
+                    return None
+        return None
+
     def _montar(self) -> None:
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -136,8 +148,11 @@ class Aplicativo(ctk.CTk):
         topo = ctk.CTkFrame(self, fg_color=tema.PAINEL, corner_radius=0, height=56)
         topo.grid(row=0, column=0, columnspan=2, sticky="ew")
         topo.grid_propagate(False)
-        _txt(topo, "Nbr Cortador", font=ctk.CTkFont(size=19, weight="bold"), text_color=tema.VERDE).pack(
-            side="left", padx=(18, 24))
+        self._logo = self._carregar_logo()
+        if self._logo:
+            ctk.CTkLabel(topo, text="", image=self._logo).pack(side="left", padx=(18, 6))
+        _txt(topo, "NBR Cut", font=ctk.CTkFont(size=19, weight="bold"), text_color=tema.DESTAQUE).pack(
+            side="left", padx=(0, 24))
         self.chip_telegram = _txt(topo, "● Telegram: desconectado", text_color=tema.TEXTO_SUAVE)
         self.chip_telegram.pack(side="left", padx=10)
         self.chip_tmdb = _txt(topo, "● TMDB", text_color=tema.TEXTO_SUAVE)
@@ -257,13 +272,13 @@ class Aplicativo(ctk.CTk):
         self.area_progresso = ctk.CTkFrame(interno, fg_color="transparent")
         self.lbl_parte = _txt(self.area_progresso, "", text_color=tema.TEXTO_SUAVE)
         self.lbl_parte.pack(anchor="w", pady=(8, 2))
-        self.barra_parte = ctk.CTkProgressBar(self.area_progresso, progress_color=tema.VERDE, fg_color=tema.PAINEL_2,
+        self.barra_parte = ctk.CTkProgressBar(self.area_progresso, progress_color=tema.DESTAQUE, fg_color=tema.PAINEL_2,
                                               height=8)
         self.barra_parte.pack(fill="x")
         self.barra_parte.set(0)
         self.lbl_total = _txt(self.area_progresso, "", text_color=tema.TEXTO_SUAVE)
         self.lbl_total.pack(anchor="w", pady=(6, 2))
-        self.barra_total = ctk.CTkProgressBar(self.area_progresso, progress_color=tema.VERDE, fg_color=tema.PAINEL_2,
+        self.barra_total = ctk.CTkProgressBar(self.area_progresso, progress_color=tema.DESTAQUE, fg_color=tema.PAINEL_2,
                                               height=8)
         self.barra_total.pack(fill="x")
         self.barra_total.set(0)
@@ -332,7 +347,7 @@ class Aplicativo(ctk.CTk):
     def _iniciar(self) -> None:
         problemas = self.cfg.problemas()
         self._status(self.chip_tmdb, "TMDB: chave ok" if self.cfg.tmdb_key else "TMDB: sem chave",
-                     tema.VERDE if self.cfg.tmdb_key else tema.ERRO)
+                     tema.SUCESSO if self.cfg.tmdb_key else tema.ERRO)
         self._atualizar_pendentes()
         if problemas:
             for p in problemas:
@@ -358,7 +373,7 @@ class Aplicativo(ctk.CTk):
 
         def ok(descricao):
             self._banco_ok = True
-            self._status(self.chip_banco, f"Registro: {descricao}", tema.VERDE)
+            self._status(self.chip_banco, f"Registro: {descricao}", tema.SUCESSO)
 
         def falha(erro):
             self._banco_ok = False
@@ -396,7 +411,7 @@ class Aplicativo(ctk.CTk):
         self._telegram_ok = True
         destino = "TESTE" if self.cfg.modo_teste else "produção"
         self._status(self.chip_telegram, f"Telegram: {nome} → canal de {destino}",
-                     tema.ALERTA if self.cfg.modo_teste else tema.VERDE)
+                     tema.ALERTA if self.cfg.modo_teste else tema.SUCESSO)
         self.log(f"Conectado como {nome}. Canal ativo: {self.cfg.canal_ativo} ({destino}).")
         if self._login is not None:
             self._login.fechar_ok()
@@ -452,7 +467,7 @@ class Aplicativo(ctk.CTk):
         self.log(f"Configurações salvas. Canal ativo: {nova.canal_ativo or '—'}"
                  f"{' (modo teste)' if nova.modo_teste else ''}; parte de {divisao.humano(nova.tamanho_parte)}.")
         self._status(self.chip_tmdb, "TMDB: chave ok" if nova.tmdb_key else "TMDB: sem chave",
-                     tema.VERDE if nova.tmdb_key else tema.ERRO)
+                     tema.SUCESSO if nova.tmdb_key else tema.ERRO)
         if mudou_conta and self.servico.cliente is not None:
             execucao.ao_terminar(self.loop.rodar(self.servico.desconectar()), self.despachar,
                                  lambda _: self._conectar(), lambda e: self._conectar())
@@ -508,7 +523,7 @@ class Aplicativo(ctk.CTk):
         for item in self.itens:
             ativo = item is self.sel
             linha = ctk.CTkFrame(self.lista_fila, fg_color=tema.PAINEL_2 if ativo else "transparent",
-                                 corner_radius=8, border_width=1 if ativo else 0, border_color=tema.VERDE)
+                                 corner_radius=8, border_width=1 if ativo else 0, border_color=tema.DESTAQUE)
             linha.pack(fill="x", pady=2, padx=2)
             nome = item.nome_final or item.nome_original
             titulo = _txt(linha, nome if len(nome) <= 38 else nome[:35] + "…", font=ctk.CTkFont(weight="bold"))
@@ -616,7 +631,7 @@ class Aplicativo(ctk.CTk):
         for candidato in item.candidatos[:6]:
             escolhido = item.dados is not None and item.dados.get("tmdb_id") == candidato.tmdb_id
             linha = ctk.CTkFrame(self.lista_candidatos, fg_color=tema.PAINEL_2, corner_radius=8,
-                                 border_width=1 if escolhido else 0, border_color=tema.VERDE)
+                                 border_width=1 if escolhido else 0, border_color=tema.DESTAQUE)
             linha.pack(fill="x", pady=3)
             poster = ctk.CTkLabel(linha, text="", width=46, height=69)
             poster.pack(side="left", padx=8, pady=6)
@@ -717,7 +732,7 @@ class Aplicativo(ctk.CTk):
         corpo = ctk.CTkFrame(self.cartao_escolhido, fg_color="transparent")
         corpo.pack(side="left", fill="both", expand=True, padx=(14 if not d.get("poster_url") else 0, 10), pady=10)
         _txt(corpo, f"✓ {d.get('titulo')} ({d.get('ano') or '—'})", font=ctk.CTkFont(size=15, weight="bold"),
-             text_color=tema.VERDE).pack(anchor="w")
+             text_color=tema.SUCESSO).pack(anchor="w")
         meta = " · ".join(str(x) for x in (
             f"{d.get('duracao')} min" if d.get("duracao") else None,
             ", ".join(d.get("generos") or []) or None,

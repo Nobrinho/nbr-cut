@@ -1,4 +1,4 @@
-# Nbr Cortador
+# NBR Cut
 
 App Windows para **cortar, padronizar e postar filmes direto no canal**, sem mandar o arquivo para o bot.
 
@@ -21,7 +21,7 @@ em [CONTRATO.md](CONTRATO.md) e vigiado por `tests/test_contrato_bot.py`.
 - Os trechos do bot que o app usa foram **copiados** para `cortador/compartilhado/` (extrator de nome, cliente
   do TMDB para filmes, legenda, formato das partes) e o acesso ao registro/fila foi reescrito em
   `armazenamento.py` e `comandos.py`.
-- A **configuração é própria** (`%APPDATA%\NbrCortador\config.json`); os segredos (hash do Telegram, chave do
+- A **configuração é própria** (`%APPDATA%\NbrCut\config.json`); os segredos (hash do Telegram, chave do
   TMDB, URL do banco) são gravados protegidos pela DPAPI do Windows. Quem já tem o bot usa o botão
   **Importar do .env do bot…** uma única vez.
 - O **registro do bot é opcional**: sem ele o app posta normalmente e o monitor do bot registra o filme na próxima
@@ -34,7 +34,7 @@ em [CONTRATO.md](CONTRATO.md) e vigiado por `tests/test_contrato_bot.py`.
 - Ordem de envio: partes N…2, depois o texto de metadados (se a legenda passar de 1024 caracteres) e **por último a
   parte 1**. O app só mostra o card da parte 1, então o filme só aparece quando está completo.
 - Arquivo que cabe numa parte só sobe como **vídeo** (com duração e streaming); o sincronismo do monitor precisa disso.
-- Falhou no meio? O estado fica salvo (`%APPDATA%\NbrCortador\jobs`) e dá para **retomar** só o que falta.
+- Falhou no meio? O estado fica salvo (`%APPDATA%\NbrCut\jobs`) e dá para **retomar** só o que falta.
 - Filme já publicado (`tmdb:{id}` no registro) é bloqueado **antes** de subir qualquer byte.
 
 ## Primeiro uso
@@ -43,7 +43,7 @@ em [CONTRATO.md](CONTRATO.md) e vigiado por `tests/test_contrato_bot.py`.
    (my.telegram.org), chave do TMDB, canal de destino e, opcionalmente, a URL do Postgres do bot.
 2. Ligue o **modo teste** e informe um canal privado de teste para os primeiros envios.
 3. **Conectar ao Telegram** → telefone, código e (se houver) senha de duas etapas. É uma sessão **própria** do app
-   (`%APPDATA%\NbrCortador\telegram.session`); a do monitor do bot não é compartilhada.
+   (`%APPDATA%\NbrCut\telegram.session`); a do monitor do bot não é compartilhada.
 4. O Postgres do bot (Docker) precisa estar no ar para checar duplicidade e registrar.
 
 ## Desenvolvimento
@@ -71,7 +71,7 @@ bot: `C:\DEV\agente_filmes\venv\Scripts\python.exe -m pytest tests\test_contrato
 powershell -ExecutionPolicy Bypass -File build_exe.ps1
 ```
 
-Saída em `dist\NbrCortador.exe` (~28 MB). O antivírus às vezes marca executáveis `--onefile` do PyInstaller como
+Saída em `dist\NbrCut.exe` (~28 MB). O antivírus às vezes marca executáveis `--onefile` do PyInstaller como
 suspeitos (falso positivo); nesse caso use `-PastaUnica`.
 
 ### Notas de arquitetura

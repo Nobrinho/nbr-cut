@@ -1,24 +1,28 @@
-"""Cores e fontes do app (identidade do Nbr PLAY: tema escuro com o verde da marca)."""
+"""Cores e fontes do app (identidade NBR Play: tokens do brand kit, tema escuro)."""
 from __future__ import annotations
 
-VERDE = "#2CE84B"
-VERDE_ESCURO = "#1FB838"
-FUNDO = "#101014"
-PAINEL = "#17181d"
-PAINEL_2 = "#1f2027"
-BORDA = "#2c2e37"
-TEXTO = "#f2f3f5"
-TEXTO_SUAVE = "#9aa0ab"
-ALERTA = "#ffb020"
-ERRO = "#ff5d5d"
-OK = VERDE
+DESTAQUE = "#FFFFFF"
+DESTAQUE_HOVER = "#D9D9D9"
+SOBRE_DESTAQUE = "#0B0C0F"
+FUNDO = "#0B0C0F"
+PAINEL = "#16181D"
+PAINEL_2 = "#22252C"
+BORDA = "#555D6B"
+TEXTO = "#F5F5F7"
+TEXTO_SUAVE = "#B7BBC4"
+SUCESSO = "#70D6A0"
+ALERTA = "#F0C56B"
+ERRO = "#FF929C"
+ERRO_FUNDO = "#3a1f22"
+ERRO_FUNDO_HOVER = "#53292d"
+OK = SUCESSO
 
 # Cores do estado de cada item da fila.
 COR_ESTADO = {
     "novo": TEXTO_SUAVE,
-    "pronto": VERDE,
+    "pronto": SUCESSO,
     "enviando": ALERTA,
-    "concluido": VERDE,
+    "concluido": SUCESSO,
     "erro": ERRO,
     "cancelado": TEXTO_SUAVE,
 }

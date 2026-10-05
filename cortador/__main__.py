@@ -1,4 +1,4 @@
-"""`python -m cortador` — abre o Nbr Cortador."""
+"""`python -m cortador` — abre o NBR Cut."""
 from __future__ import annotations
 
 import sys

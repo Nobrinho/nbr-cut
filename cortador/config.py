@@ -1,6 +1,6 @@
-"""Configuração do Cortador — própria do app, sem depender do `.env` do bot.
+"""Configuração do NBR Cut — própria do app, sem depender do `.env` do bot.
 
-Tudo fica em `%APPDATA%\\NbrCortador\\config.json`. Os SEGREDOS (hash da API do Telegram, chave do
+Tudo fica em `%APPDATA%\\NbrCut\\config.json`. Os SEGREDOS (hash da API do Telegram, chave do
 TMDB, URL do banco) são gravados protegidos pela DPAPI do Windows (ver `segredos`); o resto é texto
 simples. A sessão do Telegram é própria do app (`telegram.session`): a do monitor do bot não pode ser
 compartilhada, porque duas conexões na mesma sessão derrubam uma à outra.
@@ -27,7 +27,14 @@ SEGREDOS = ("api_hash", "tmdb_key", "database_url")
 
 def pasta_dados() -> Path:
     base = os.getenv("APPDATA") or str(Path.home() / ".config")
-    return Path(base) / "NbrCortador"
+    nova = Path(base) / "NbrCut"
+    antiga = Path(base) / "NbrCortador"
+    if antiga.is_dir() and not nova.exists():  # app antes se chamava Nbr Cortador: leva config, jobs e sessão
+        try:
+            antiga.rename(nova)
+        except OSError:
+            return antiga
+    return nova
 
 
 def arquivo_config() -> Path:

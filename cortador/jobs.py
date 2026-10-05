@@ -19,8 +19,8 @@ NOVO, ENVIANDO, CONCLUIDO, CANCELADO, ERRO = "novo", "enviando", "concluido", "c
 
 
 def pasta_padrao() -> Path:
-    base = os.getenv("APPDATA") or str(Path.home() / ".config")
-    return Path(base) / "NbrCortador" / "jobs"
+    from cortador.config import pasta_dados
+    return pasta_dados() / "jobs"
 
 
 @dataclass
