@@ -64,6 +64,11 @@ class Configuracao:
     # Envio.
     premium: bool = False
     tamanho_parte: int = divisao.TAMANHO_PADRAO
+    # Otimizar para streaming (ffmpeg + placa NVIDIA). `ffmpeg` vazio = procurar no PATH/winget.
+    ffmpeg: str = ""
+    pasta_otimizados: str = ""          # vazio = %APPDATA%\\NbrCut\\otimizados
+    perfil_otimizacao: str = "4k18"
+    apagar_otimizado: bool = True       # apaga a cópia otimizada depois de postar
     # Arquivos do app.
     sessao: Path = field(default_factory=lambda: pasta_dados() / "telegram.session")
     pasta_jobs: Path = field(default_factory=lambda: pasta_dados() / "jobs")
@@ -74,6 +79,10 @@ class Configuracao:
     def canal_ativo(self) -> str:
         """Onde postar agora: o canal de teste (se o modo teste está ligado) ou o de produção."""
         return self.canal_teste if self.modo_teste else self.canal_destino
+
+    @property
+    def pasta_de_otimizados(self) -> Path:
+        return Path(self.pasta_otimizados) if self.pasta_otimizados.strip() else pasta_dados() / "otimizados"
 
     @property
     def limite(self) -> int:
@@ -127,6 +136,10 @@ def carregar(arquivo: Path | None = None) -> Configuracao:
     cfg.modo_teste = bool(dados.get("modo_teste", False))
     cfg.pasta_registro = str(dados.get("pasta_registro") or "").strip()
     cfg.premium = bool(dados.get("premium", False))
+    cfg.ffmpeg = str(dados.get("ffmpeg") or "").strip()
+    cfg.pasta_otimizados = str(dados.get("pasta_otimizados") or "").strip()
+    cfg.perfil_otimizacao = str(dados.get("perfil_otimizacao") or "4k18").strip() or "4k18"
+    cfg.apagar_otimizado = bool(dados.get("apagar_otimizado", True))
     tamanho = dados.get("tamanho_parte")
     cfg.tamanho_parte = tamanho if isinstance(tamanho, int) and tamanho > 0 else divisao.tamanho_padrao(cfg.premium)
     return cfg
@@ -144,6 +157,10 @@ def salvar(cfg: Configuracao, arquivo: Path | None = None) -> None:
         "pasta_registro": cfg.pasta_registro,
         "premium": cfg.premium,
         "tamanho_parte": cfg.tamanho_parte,
+        "ffmpeg": cfg.ffmpeg,
+        "pasta_otimizados": cfg.pasta_otimizados,
+        "perfil_otimizacao": cfg.perfil_otimizacao,
+        "apagar_otimizado": cfg.apagar_otimizado,
     }
     for campo in SEGREDOS:
         valor = getattr(cfg, campo)

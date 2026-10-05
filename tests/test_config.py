@@ -144,3 +144,22 @@ def test_armazenamento_vem_da_configuracao():
 def test_canal_como_entidade():
     assert config.canal_como_entidade("-1001234") == -1001234
     assert config.canal_como_entidade(" @meucanal ") == "@meucanal"
+
+
+def test_campos_de_otimizacao_vao_e_voltam_do_disco(tmp_path):
+    arquivo = tmp_path / "config.json"
+    cfg = _completa(ffmpeg=r"C:\ff\bin\ffmpeg.exe", pasta_otimizados=r"D:\otim", perfil_otimizacao="4k12",
+                    apagar_otimizado=False)
+    config.salvar(cfg, arquivo)
+    lido = config.carregar(arquivo)
+    assert (lido.ffmpeg, lido.pasta_otimizados, lido.perfil_otimizacao, lido.apagar_otimizado) == (
+        r"C:\ff\bin\ffmpeg.exe", r"D:\otim", "4k12", False)
+
+
+def test_configuracao_antiga_sem_campos_de_otimizacao_usa_os_padroes(tmp_path):
+    arquivo = tmp_path / "config.json"
+    arquivo.write_text(json.dumps({"api_id": 1, "canal_destino": "-100"}), encoding="utf-8")
+    cfg = config.carregar(arquivo)
+    assert (cfg.ffmpeg, cfg.pasta_otimizados, cfg.perfil_otimizacao, cfg.apagar_otimizado) == ("", "", "4k18", True)
+    assert cfg.pasta_de_otimizados == config.pasta_dados() / "otimizados"
+    assert _completa(pasta_otimizados=r"D:\otim").pasta_de_otimizados.name == "otim"

@@ -7,7 +7,7 @@ import pytest
 
 from cortador import config as cfg_mod
 from cortador import divisao, execucao, midia, servico
-from cortador.fila import ItemFila, PRONTO, NOVO, eh_video
+from cortador.fila import ItemFila, OTIMIZANDO, PRONTO, NOVO, eh_video
 
 MIB = 1024 * 1024
 
@@ -293,3 +293,67 @@ def test_servico_leva_duracao_e_dimensoes_para_o_job(filme, tmp_path):
     sem.escolher_filme(DADOS)
     job2 = servico.Servico(cfg).novo_job(sem)
     assert (job2.duracao_s, job2.largura, job2.altura) == (None, 0, 0)
+
+
+# ====================================================================== cópia otimizada
+
+@pytest.fixture
+def copia(tmp_path):
+    caminho = tmp_path / "copia.4k18.mkv"
+    caminho.write_bytes(b"\0" * 4_000)
+    return str(caminho)
+
+
+def test_aplicar_otimizado_troca_o_arquivo_mas_guarda_o_original(filme, copia):
+    item = ItemFila.criar(filme)
+    item.escolher_filme(DADOS)
+    assert item.nome_final.endswith(".mkv")
+    item.aplicar_otimizado(copia, "4k18")
+    assert item.otimizado and item.caminho == copia and item.tamanho == 4_000
+    assert item.caminho_original == filme and item.tamanho_original == 10_000 and item.perfil_otimizado == "4k18"
+    assert item.nome_original == "Duna.Parte.2.2024.2160p.WEB-DL.DUAL.mkv"      # a tela continua mostrando o original
+    assert item.midia is None and item.extensao == ".mkv"
+
+
+def test_otimizar_um_mp4_muda_a_extensao_do_nome_final(tmp_path, copia):
+    mp4 = tmp_path / "Filme.2020.1080p.mp4"
+    mp4.write_bytes(b"x" * 100)
+    item = ItemFila.criar(str(mp4))
+    item.escolher_filme(DADOS)
+    assert item.nome_final.endswith(".mp4")
+    item.aplicar_otimizado(copia, "4k18")
+    assert item.nome_final.endswith(".mkv")
+    item.definir_nome("Meu Nome.mp4")                                           # nome editado à mão
+    assert item.nome_editado
+    item.desfazer_otimizado()
+    assert item.nome_final.endswith(".mp4") and item.nome_final.startswith("Meu Nome")
+
+
+def test_desfazer_otimizado_volta_ao_original_e_devolve_a_copia(filme, copia):
+    item = ItemFila.criar(filme)
+    assert item.desfazer_otimizado() is None                                    # nada a desfazer
+    item.aplicar_otimizado(copia, "4k12")
+    assert item.desfazer_otimizado() == copia
+    assert (item.caminho, item.tamanho, item.otimizado, item.perfil_otimizado) == (filme, 10_000, False, None)
+    assert item.caminho_original is None and item.midia is None
+
+
+def test_aplicar_duas_vezes_mantem_o_primeiro_original(filme, copia, tmp_path):
+    outra = tmp_path / "outra.mkv"
+    outra.write_bytes(b"\0" * 2_000)
+    item = ItemFila.criar(filme)
+    item.aplicar_otimizado(copia, "4k18")
+    item.aplicar_otimizado(str(outra), "4k12")
+    assert item.caminho_original == filme and item.tamanho_original == 10_000 and item.tamanho == 2_000
+
+
+def test_otimizando_impede_postar_e_o_plano_usa_o_tamanho_novo(filme, copia):
+    item = ItemFila.criar(filme)
+    item.escolher_filme(DADOS)
+    item.estado = OTIMIZANDO
+    assert any("otimização" in f for f in item.pendencias(3_000, 3_000))
+    item.estado = PRONTO
+    assert not any("otimização" in f for f in item.pendencias(3_000, 3_000))
+    antes = len(item.plano(1_000))
+    item.aplicar_otimizado(copia, "4k18")
+    assert len(item.plano(1_000)) == 4 and antes == 10

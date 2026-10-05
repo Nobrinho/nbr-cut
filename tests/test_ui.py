@@ -3,6 +3,7 @@
 Cria uma janela Tk de verdade (escondida). Pula sozinho onde não há ambiente gráfico.
 """
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import pytest
 ctk = pytest.importorskip("customtkinter")
 
 from cortador import config, execucao
-from cortador.fila import CANCELADO, CONCLUIDO, ERRO, NOVO, PRONTO, ItemFila
+from cortador.fila import CANCELADO, CONCLUIDO, ERRO, NOVO, OTIMIZANDO, PRONTO, ItemFila
 from cortador.publicador import Evento, PublicacaoCancelada
 from cortador.registro import JaPublicado
 
@@ -528,3 +529,248 @@ def test_formatadores():
 
     assert formatar_tempo(45) == "45s" and formatar_tempo(125) == "2min05s" and formatar_tempo(3725) == "1h02min"
     assert formatar_velocidade(6.5 * 1024 * 1024) == "6.5 MB/s"
+
+
+# ====================================================================== otimizar para streaming
+
+class _Falsos:
+    """ffmpeg/placa falsos: o que a tela pede ao núcleo, sem rodar nada de verdade."""
+
+    def __init__(self, monkeypatch, tmp_path, app):
+        from cortador import otimizar
+        self.otimizar = otimizar
+        self.tmp = tmp_path
+        self.app = app
+        self.nvenc = True
+        self.chamadas = []
+        self.liberar = threading.Event()
+        self.falhar = None
+        self.ff = otimizar.Ferramentas("ffmpeg.exe", "ffprobe.exe")
+        trilhas = [otimizar.Trilha(0, "video", "hevc", largura=3840, altura=2160, bits=10),
+                   otimizar.Trilha(1, "audio", "eac3", 6, "en"), otimizar.Trilha(2, "audio", "ac3", 6, "pt")]
+        monkeypatch.setattr(otimizar, "localizar_ffmpeg", lambda configurado="": self.ff)
+        monkeypatch.setattr(otimizar, "nvenc_funciona", lambda ff, timeout=30.0: self.nvenc)
+        monkeypatch.setattr(otimizar, "listar_trilhas", lambda ff, caminho: trilhas)
+        monkeypatch.setattr(otimizar, "espaco_livre", lambda pasta: 500 * 1024 ** 3)
+        monkeypatch.setattr(otimizar, "executar", self.executar)
+
+    def executar(self, comando, destino, duracao_s, progresso, cancelado):
+        self.chamadas.append((comando, str(destino), duracao_s))
+        progresso(self.otimizar.Progresso(0.25, 90.0, 3.8, 1_000, 60.0))
+        while not self.liberar.is_set():
+            if cancelado():
+                raise self.otimizar.OtimizacaoCancelada()
+            time.sleep(0.01)
+        if self.falhar:
+            raise self.otimizar.ErroOtimizacao(self.falhar)
+        Path(destino).parent.mkdir(parents=True, exist_ok=True)      # o executar real também cria a pasta
+        Path(destino).write_bytes(b"\0" * 3_000)
+        progresso(self.otimizar.Progresso(1.0, tamanho_bytes=3_000, restante_s=0.0))
+        return Path(destino)
+
+
+@pytest.fixture
+def fals(app, monkeypatch, tmp_path):
+    f = _Falsos(monkeypatch, tmp_path, app)
+    app.cfg.pasta_otimizados = str(tmp_path / "otim")
+    app.cfg.apagar_otimizado = True
+    app.mensagens.resposta_sim = True
+    yield f
+    f.liberar.set()
+    app.cancel_otim.cancelar()
+    app.otimizando = None
+    app.cfg.pasta_otimizados = ""
+
+
+def _item_com_midia(app, filme):
+    item = _pronto(app, filme)
+    item.definir_midia(_info_dv7())
+    app._atualizar_detalhe()
+    app.update()
+    return item
+
+
+class _DialogoFalso:
+    ultimo = None
+
+    def __init__(self, pai, cabecalho, opcoes, padrao, avisos, ao_confirmar):
+        type(self).ultimo = self
+        self.cabecalho, self.opcoes, self.padrao, self.avisos, self.ao_confirmar = cabecalho, opcoes, padrao, avisos, ao_confirmar
+
+
+def _abrir_dialogo(app, monkeypatch):
+    from cortador.ui import app as app_mod
+    monkeypatch.setattr(app_mod, "DialogoOtimizar", _DialogoFalso)
+    _DialogoFalso.ultimo = None
+    app._abrir_otimizacao()
+    assert bombear(app, lambda: _DialogoFalso.ultimo is not None)
+    return _DialogoFalso.ultimo
+
+
+def test_botao_otimizar_fica_liberado_com_midia_lida(app, filme, fals):
+    item = _pronto(app, filme)
+    assert app.botao_otimizar.cget("state") == "disabled"          # ainda sem metadados
+    item.definir_midia(_info_dv7())
+    app._atualizar_detalhe()
+    assert app.botao_otimizar.cget("state") == "normal"
+    assert "Bitrate" not in app.lbl_otim.cget("text")              # 10 KB / 2h35: nada de bitrate alto
+
+
+def test_dica_de_bitrate_alto_na_secao(app, filme, fals):
+    item = _item_com_midia(app, filme)
+    item.midia.duracao_s = 0.001          # 10 KB em 1 ms = bitrate alto, sem inflar o plano de partes
+    app._atualizar_detalhe()
+    assert "otimizar evita travar" in app.lbl_otim.cget("text")
+
+
+def test_dolby_vision_5_nao_deixa_otimizar_e_diz_porque(app, filme, fals):
+    item = _pronto(app, filme)
+    info = _info_dv7()
+    info.video.dv_perfil = 5
+    item.definir_midia(info)
+    app._atualizar_detalhe()
+    assert app.botao_otimizar.cget("state") == "disabled" and "perfil 5" in app.lbl_otim.cget("text")
+
+
+def test_sem_ffmpeg_mostra_como_instalar(app, filme, fals, monkeypatch):
+    _item_com_midia(app, filme)
+    monkeypatch.setattr(fals.otimizar, "localizar_ffmpeg", lambda configurado="": None)
+    app._abrir_otimizacao()
+    assert "winget install Gyan.FFmpeg" in app.mensagens.avisos[-1][1]
+
+
+def test_sem_placa_nvidia_explica(app, filme, fals):
+    _item_com_midia(app, filme)
+    fals.nvenc = False
+    app._abrir_otimizacao()
+    assert bombear(app, lambda: bool(app.mensagens.avisos))
+    assert "NVENC" in app.mensagens.avisos[-1][1]
+
+
+def test_dialogo_traz_um_perfil_por_opcao_com_estimativas(app, filme, fals, monkeypatch):
+    _item_com_midia(app, filme)
+    d = _abrir_dialogo(app, monkeypatch)
+    assert [o[0] for o in d.opcoes] == ["4k18", "4k25", "4k12", "1080p8"] and d.padrao == "4k18"
+    assert "MB/s" in d.opcoes[0][2] and "RTX 3080" in d.opcoes[0][2]
+    assert "Áudio: pt AC3 5.1, en EAC3 5.1" in d.cabecalho[1]
+
+
+def test_perfil_padrao_vem_da_configuracao(app, filme, fals, monkeypatch):
+    _item_com_midia(app, filme)
+    app.cfg.perfil_otimizacao = "1080p8"
+    assert _abrir_dialogo(app, monkeypatch).padrao == "1080p8"
+    app.cfg.perfil_otimizacao = "4k18"
+
+
+def test_otimizacao_completa_troca_o_arquivo_e_le_os_metadados_de_novo(app, filme, fals, monkeypatch):
+    item = _item_com_midia(app, filme)
+    d = _abrir_dialogo(app, monkeypatch)
+    monkeypatch.setattr(fals.otimizar.midia, "ler", lambda caminho: _info_dv7())
+    d.ao_confirmar("4k18")
+    assert item.estado == OTIMIZANDO and app.otimizando is item
+    assert bombear(app, lambda: bool(fals.chamadas))
+    comando, destino, duracao = fals.chamadas[0]
+    assert destino.endswith("filme.4k18.mkv".replace("filme", Path(filme).stem)) and duracao == pytest.approx(9_318.3)
+    assert "hevc_nvenc" in comando and comando[comando.index("-b:v") + 1] == "18M"
+    assert bombear(app, lambda: "25%" in app.lbl_total.cget("text"))
+    assert "3.8× o tempo real" in app.lbl_total.cget("text") and "faltam" in app.lbl_total.cget("text")
+    assert app.botao_cancelar.cget("state") == "normal" and app.botao_postar.cget("state") == "disabled"
+    assert app.botao_otimizar.cget("state") == "disabled"
+    fals.liberar.set()
+    assert bombear(app, lambda: item.otimizado)
+    app.update()
+    assert app.otimizando is None and item.estado == PRONTO and item.tamanho == 3_000
+    assert Path(item.caminho).is_file() and item.caminho_original == filme
+    assert bombear(app, lambda: item.midia is not None)
+    app.update()
+    assert "Cópia otimizada" in app.lbl_otim.cget("text") and app.botao_original.winfo_ismapped()
+    assert "Otimizado: 9.8 KB" in app.caixa_log.get("1.0", "end") or "Otimizado:" in app.caixa_log.get("1.0", "end")
+
+
+def test_cancelar_a_otimizacao_restaura_o_item(app, filme, fals, monkeypatch):
+    item = _item_com_midia(app, filme)
+    d = _abrir_dialogo(app, monkeypatch)
+    d.ao_confirmar("4k12")
+    assert bombear(app, lambda: bool(fals.chamadas))
+    app._cancelar()
+    assert bombear(app, lambda: app.otimizando is None)
+    app.update()
+    assert item.estado == PRONTO and not item.otimizado and item.caminho == filme
+    assert "Otimização cancelada" in app.caixa_log.get("1.0", "end")
+    assert app.mensagens.erros == [] and app.botao_otimizar.cget("state") == "normal"
+
+
+def test_erro_do_ffmpeg_mostra_a_mensagem_e_nao_troca_o_arquivo(app, filme, fals, monkeypatch):
+    item = _item_com_midia(app, filme)
+    fals.falhar = "Unrecognized option"
+    d = _abrir_dialogo(app, monkeypatch)
+    fals.liberar.set()
+    d.ao_confirmar("4k18")
+    assert bombear(app, lambda: bool(app.mensagens.erros))
+    assert "Unrecognized option" in app.mensagens.erros[0][1] and item.estado == PRONTO and not item.otimizado
+
+
+def test_sem_espaco_em_disco_nao_comeca(app, filme, fals, monkeypatch):
+    item = _item_com_midia(app, filme)
+    d = _abrir_dialogo(app, monkeypatch)
+    monkeypatch.setattr(fals.otimizar, "espaco_livre", lambda pasta: 1_000)
+    d.ao_confirmar("4k18")
+    assert app.otimizando is None and item.estado == PRONTO and fals.chamadas == []
+    assert "Sem espaço" in app.mensagens.avisos[-1][0]
+
+
+def test_voltar_ao_original_apaga_a_copia_se_o_usuario_quiser(app, filme, fals, tmp_path, monkeypatch):
+    item = _item_com_midia(app, filme)
+    copia = tmp_path / "c.mkv"
+    copia.write_bytes(b"x" * 100)
+    item.aplicar_otimizado(str(copia), "4k18")
+    monkeypatch.setattr(fals.otimizar.midia, "ler", lambda caminho: _info_dv7())
+    app._atualizar_detalhe()
+    app._voltar_original()
+    assert not item.otimizado and item.caminho == filme and not copia.exists()
+    assert "Apagar a cópia" in app.mensagens.perguntas[-1][1]
+
+
+def test_voltar_ao_original_mantem_a_copia_se_o_usuario_recusar(app, filme, fals, tmp_path, monkeypatch):
+    item = _item_com_midia(app, filme)
+    copia = tmp_path / "c.mkv"
+    copia.write_bytes(b"x" * 100)
+    item.aplicar_otimizado(str(copia), "4k18")
+    monkeypatch.setattr(fals.otimizar.midia, "ler", lambda caminho: _info_dv7())
+    app.mensagens.resposta_sim = False
+    app._voltar_original()
+    assert not item.otimizado and copia.exists()
+
+
+def test_depois_de_postar_a_copia_otimizada_e_apagada(app, filme, fals, tmp_path):
+    item = _item_com_midia(app, filme)
+    copia = tmp_path / "c.mkv"
+    copia.write_bytes(b"x" * 100)
+    item.aplicar_otimizado(str(copia), "4k18")
+    app._postou(item, "tmdb:693134")
+    assert not copia.exists() and not item.otimizado and item.caminho == filme
+
+
+def test_depois_de_postar_mantem_a_copia_se_a_configuracao_mandar(app, filme, fals, tmp_path):
+    item = _item_com_midia(app, filme)
+    copia = tmp_path / "c.mkv"
+    copia.write_bytes(b"x" * 100)
+    item.aplicar_otimizado(str(copia), "4k18")
+    app.cfg.apagar_otimizado = False
+    app._postou(item, "tmdb:693134")
+    assert copia.exists() and "mantida" in app.caixa_log.get("1.0", "end")
+
+
+def test_nao_posta_enquanto_otimiza(app, filme, fals):
+    item = _item_com_midia(app, filme)
+    app.otimizando = item
+    assert any("otimização" in p for p in app._problemas_para_postar(item))
+    app.otimizando = None
+
+
+def test_item_otimizando_nao_entra_no_postar_todos(app, filme, fals):
+    item = _pronto(app, filme)
+    item.estado = OTIMIZANDO
+    app._atualizar_fila()
+    assert "(0)" in app.botao_postar_todos.cget("text")
+    item.estado = PRONTO

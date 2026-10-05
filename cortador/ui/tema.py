@@ -25,6 +25,7 @@ COR_ESTADO = {
     "concluido": SUCESSO,
     "erro": ERRO,
     "cancelado": TEXTO_SUAVE,
+    "otimizando": ALERTA,
 }
 
 ROTULO_ESTADO = {
@@ -34,6 +35,7 @@ ROTULO_ESTADO = {
     "concluido": "postado",
     "erro": "erro — retome",
     "cancelado": "cancelado",
+    "otimizando": "otimizando…",
 }
 
 ESPACO = 12

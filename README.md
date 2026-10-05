@@ -25,6 +25,33 @@ com MKV (cabeçalho EBML) e MP4/MOV (caixa `moov`, mesmo no fim do arquivo).
 - **Arquivo único** sobe como vídeo com a duração e a largura/altura reais (e não só a duração do TMDB).
 - Se o arquivo não puder ser lido, o app avisa na seção e segue normalmente.
 
+## Otimizar para streaming
+
+Um remux 4K tem ~55 Mbps de vídeo; o download do Telegram entrega ~5 MB/s (~40 Mbps) a uma conta comum e o filme
+trava em buffer (medido: o F1 de 76 GB passou 52% do tempo travado). O botão **Otimizar para streaming…** (seção
+MÍDIA) gera uma **cópia** mais leve antes de postar; o original nunca é alterado.
+
+| Perfil | Vídeo | F1 (2h35) | VMAF vs original* | Pede de download |
+|---|---|---|---|---|
+| 4K · 18 Mbps (recomendado) | HEVC 10-bit | ~21 GiB | 99,4 | ~2,4 MB/s |
+| 4K · 25 Mbps | HEVC 10-bit | ~29 GiB | 99,7 | ~3,3 MB/s |
+| 4K · 12 Mbps | HEVC 10-bit | ~15 GiB | 98,9 | ~1,7 MB/s |
+| 1080p · 8 Mbps | HEVC 10-bit | ~10 GiB | 95,3 numa TV 4K | ~1,2 MB/s |
+
+\* no trecho mais pesado do F1 (62 Mbps de origem). O VMAF não é calibrado para HDR (PQ): vale a ordem, não o valor.
+
+- **Como roda:** `ffmpeg` com `hevc_nvenc` (preset `p4`; o `p7` é 3,5× mais lento sem ganho). Numa RTX 3080: ~3,8× o
+  tempo real em 4K (F1 ≈ 41 min) e ~9× em 1080p. Progresso, velocidade e tempo restante na barra; **Cancelar** apaga o parcial.
+- **O que mantém:** HDR10 (mastering display e MaxCLL), áudio em **português + original** copiado sem recodificar
+  (TrueHD/DTS viram EAC3 640k), legendas de texto pt (até 3) e en, e o índice do MKV **no começo** do arquivo
+  (o app não precisa ler o fim antes de tocar).
+- **O que descarta:** Dolby Vision (o app toca a camada base HDR10), áudios extras, legendas de imagem (PGS).
+  Dolby Vision perfil 5 não pode ser otimizado (sem camada base compatível).
+- **Depois:** a cópia vira o arquivo que é cortado e postado; ao concluir, é apagada (configurável). **Voltar ao
+  original** desfaz antes de postar.
+- **Requisitos:** placa NVIDIA com driver recente e `ffmpeg` com NVENC: `winget install Gyan.FFmpeg`. O app procura
+  no PATH e no winget; ou aponte o `ffmpeg.exe` em Configurações. Precisa de espaço livre para a cópia (~25 GB por 4K).
+
 ## Independente do bot
 
 O app **não importa nada** do repositório do bot (`agente_filmes`). O que ele compartilha com o bot é um

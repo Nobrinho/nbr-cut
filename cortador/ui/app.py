@@ -20,15 +20,16 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from cortador import __version__, busca, divisao, execucao, midia, registro
+from cortador import __version__, busca, divisao, execucao, midia, otimizar, registro
 from cortador import config as config_mod
 from cortador.config import Configuracao
-from cortador.fila import (CANCELADO, CONCLUIDO, ENVIANDO, ERRO, NOVO, PRONTO, ItemFila, eh_video)
+from cortador.fila import (CANCELADO, CONCLUIDO, ENVIANDO, ERRO, NOVO, OTIMIZANDO, PRONTO, ItemFila, eh_video)
 from cortador.jobs import Job
 from cortador.publicador import Evento, PublicacaoCancelada
 from cortador.servico import Servico
 from cortador.ui import miniaturas, tema
-from cortador.ui.dialogos import (DialogoConfiguracoes, DialogoConfirmar, DialogoLogin, DialogoPendentes, botao)
+from cortador.ui.dialogos import (DialogoConfiguracoes, DialogoConfirmar, DialogoLogin, DialogoOtimizar,
+                                  DialogoPendentes, botao)
 
 LARGURA_FILA = 330
 
@@ -91,6 +92,8 @@ class Aplicativo(ctk.CTk):
         gc.disable()
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cortador-io")
         self.cancelamento = execucao.Cancelamento()
+        self.cancel_otim = execucao.Cancelamento()      # cancela a otimização (ffmpeg) em andamento
+        self.otimizando: ItemFila | None = None
         self.itens: list[ItemFila] = []
         self.sel: ItemFila | None = None
         self.postando: ItemFila | None = None
@@ -211,6 +214,13 @@ class Aplicativo(ctk.CTk):
         self.lbl_midia_audio.pack(anchor="w")
         self.lbl_midia_avisos = _txt(interno, "", wraplength=680, justify="left")
         self.lbl_midia_avisos.pack(anchor="w", pady=(6, 0))
+        linha = ctk.CTkFrame(interno, fg_color="transparent")
+        linha.pack(fill="x", pady=(8, 0))
+        self.botao_otimizar = botao(linha, "Otimizar para streaming…", self._abrir_otimizacao, largura=210)
+        self.botao_otimizar.pack(side="left")
+        self.botao_original = botao(linha, "Voltar ao original", self._voltar_original, largura=150)
+        self.lbl_otim = _txt(linha, "", text_color=tema.TEXTO_SUAVE, wraplength=420, justify="left")
+        self.lbl_otim.pack(side="left", padx=12)
 
         # --- busca no TMDB
         _, interno = _secao(self.conteudo, "FILME NO TMDB")
@@ -737,8 +747,8 @@ class Aplicativo(ctk.CTk):
             avisos.append("⚠ Registro do bot não configurado: não checa duplicidade; o monitor registra depois.")
         self.lbl_aviso.configure(text="\n".join(avisos), text_color=tema.ERRO if item.duplicado else tema.ALERTA)
 
-        enviando = self.postando is not None
-        pode = (not enviando and self._telegram_ok and not item.pendencias(self.cfg.tamanho_parte, self.cfg.limite))
+        enviando = self.postando is not None or self.otimizando is not None
+        pode = (self.postando is None and self._telegram_ok and not item.pendencias(self.cfg.tamanho_parte, self.cfg.limite))
         self.botao_postar.configure(state="normal" if pode else "disabled",
                                     text="Retomar envio…" if item.job_id and item.estado in (ERRO, CANCELADO) else "Postar no canal…")
         self.botao_cortar.configure(state="normal" if item.dados and not enviando and len(item.plano(self.cfg.tamanho_parte)) > 1
@@ -749,7 +759,34 @@ class Aplicativo(ctk.CTk):
         self.lbl_destino.configure(text=f"Destino → {destino}",
                                    text_color=tema.ALERTA if self.cfg.modo_teste else tema.TEXTO_SUAVE)
 
+    def _atualizar_otimizacao(self, item: ItemFila) -> None:
+        ocupado = self.otimizando is not None or self.postando is not None
+        if item.otimizado:
+            perfil = otimizar.PERFIS.get(item.perfil_otimizado or "")
+            self.lbl_otim.configure(
+                text=f"✔ Cópia otimizada ({perfil.nome if perfil else item.perfil_otimizado}) · "
+                     f"original: {divisao.humano(item.tamanho_original)}", text_color=tema.SUCESSO)
+            self.botao_original.pack(side="left", padx=(12, 0), before=self.lbl_otim)
+            self.botao_original.configure(state="disabled" if ocupado or item.estado in (ENVIANDO, CONCLUIDO) else "normal")
+            self.botao_otimizar.configure(state="disabled")
+            return
+        self.botao_original.pack_forget()
+        pode, motivo = otimizar.pode_otimizar(item.midia)
+        mbps = item.midia.bitrate_medio_mbps(item.tamanho) if item.midia else None
+        if item.estado == OTIMIZANDO:
+            texto, cor = "Otimizando… acompanhe o progresso embaixo.", tema.ALERTA
+        elif item.midia is not None and not pode:
+            texto, cor = motivo, tema.TEXTO_SUAVE
+        elif mbps and mbps >= midia.BITRATE_ALTO_MBPS:
+            texto, cor = f"Bitrate de {mbps:.0f} Mbps: otimizar evita travar no buffer.", tema.ALERTA
+        else:
+            texto, cor = "", tema.TEXTO_SUAVE
+        self.lbl_otim.configure(text=texto, text_color=cor)
+        liberado = pode and not ocupado and item.estado not in (ENVIANDO, CONCLUIDO, OTIMIZANDO)
+        self.botao_otimizar.configure(state="normal" if liberado else "disabled")
+
     def _atualizar_midia(self, item: ItemFila) -> None:
+        self._atualizar_otimizacao(item)
         if item.midia is None:
             texto = f"Não deu para ler os metadados: {item.midia_erro}" if item.midia_erro else "Lendo metadados do arquivo…"
             self.lbl_midia_video.configure(text=texto, text_color=tema.TEXTO_SUAVE if not item.midia_erro else tema.ALERTA)
@@ -871,6 +908,174 @@ class Aplicativo(ctk.CTk):
         self.barra_total.set(fracao)
         self.lbl_total.configure(text=f"{divisao.humano(feito)} de {divisao.humano(total)} ({fracao:.0%})")
 
+    # ================================================================================== otimizar para streaming
+
+    def _abrir_otimizacao(self) -> None:
+        item = self.sel
+        if item is None or item.midia is None or self.otimizando is not None or self.postando is not None:
+            return
+        pode, motivo = otimizar.pode_otimizar(item.midia)
+        if not pode:
+            messagebox.showinfo("Otimizar para streaming", motivo)
+            return
+        ferramentas = otimizar.localizar_ffmpeg(self.cfg.ffmpeg)
+        if ferramentas is None:
+            messagebox.showwarning(
+                "ffmpeg não encontrado",
+                "Para otimizar é preciso o ffmpeg (com suporte a NVENC).\n\nInstale com:\n"
+                "    winget install Gyan.FFmpeg\n\nou aponte o ffmpeg.exe em Configurações.")
+            return
+        self.log(f"Preparando a otimização de {item.nome_original}…")
+
+        def tarefa():
+            if not otimizar.nvenc_funciona(ferramentas):
+                raise otimizar.ErroOtimizacao(
+                    "Não consegui usar o NVENC: é preciso uma placa NVIDIA com driver atualizado e um ffmpeg com "
+                    "suporte a NVENC.")
+            return otimizar.escolher_trilhas(otimizar.listar_trilhas(ferramentas, item.caminho))
+
+        def pronto(selecao):
+            if item not in self.itens or self.otimizando is not None:
+                return
+            self._dialogo_otimizar(item, ferramentas, selecao)
+
+        def falha(erro: BaseException) -> None:
+            self.log(f"⚠ {erro}")
+            messagebox.showwarning("Otimizar para streaming", str(erro))
+
+        self._em_segundo_plano(tarefa, pronto, falha)
+
+    def _dialogo_otimizar(self, item: ItemFila, ferramentas, selecao) -> None:
+        mbps = item.midia.bitrate_medio_mbps(item.tamanho)
+        cabecalho = [
+            f"Original: {divisao.humano(item.tamanho)}" + (f" · {mbps:.0f} Mbps de média" if mbps else ""),
+            selecao.resumo(),
+        ]
+        opcoes = []
+        for perfil in otimizar.PERFIS.values():
+            e = otimizar.estimar(perfil, item.midia, item.tamanho, len(selecao.audios))
+            opcoes.append((perfil.id, perfil.nome,
+                           f"~{divisao.humano(e.tamanho_bytes)} · cerca de {formatar_tempo(e.tempo_s)} (RTX 3080) · "
+                           f"pede ~{e.download_mb_s:.1f} MB/s de download"))
+        avisos = []
+        padrao = otimizar.PERFIS.get(self.cfg.perfil_otimizacao) or otimizar.PERFIS[otimizar.PERFIL_PADRAO]
+        if not otimizar.estimar(padrao, item.midia, item.tamanho, len(selecao.audios)).vale_a_pena:
+            avisos.append("O original já é leve; reencodar pode não reduzir quase nada e perde qualidade.")
+        DialogoOtimizar(self, cabecalho, opcoes, padrao.id, avisos,
+                        lambda perfil_id: self._otimizar(item, ferramentas, selecao, otimizar.PERFIS[perfil_id]))
+
+    def _otimizar(self, item: ItemFila, ferramentas, selecao, perfil: otimizar.Perfil) -> None:
+        pasta = self.cfg.pasta_de_otimizados
+        estimativa = otimizar.estimar(perfil, item.midia, item.tamanho, len(selecao.audios))
+        livre = otimizar.espaco_livre(pasta)
+        if livre < estimativa.tamanho_bytes * 1.15:
+            messagebox.showwarning(
+                "Sem espaço", f"A cópia ocupa ~{divisao.humano(estimativa.tamanho_bytes)} e só há "
+                              f"{divisao.humano(livre)} livres em {pasta}. Libere espaço ou troque a pasta em Configurações.")
+            return
+        destino = otimizar.caminho_de_saida(item.caminho, pasta, perfil)
+        comando = otimizar.montar_comando(ferramentas, item.caminho, str(destino), perfil, selecao)
+        duracao = item.midia.duracao_s or 0.0
+        item.estado_antes_de_otimizar = item.estado
+        item.estado, item.mensagem = OTIMIZANDO, ""
+        self.otimizando = item
+        self.cancel_otim.zerar()
+        self._reiniciar_progresso()
+        self._progresso_fixo = True
+        self._mostrar_progresso(True)
+        self.barra_parte.set(0)
+        self.barra_total.set(0)
+        self.lbl_parte.configure(text=f"Otimizando para streaming: {perfil.nome}")
+        self.lbl_total.configure(text="Começando…")
+        self.log(f"Otimizando {item.nome_original} → {destino} ({perfil.nome}, ~{divisao.humano(estimativa.tamanho_bytes)})")
+        self._atualizar_fila()
+        self._atualizar_detalhe()
+
+        ultimo = [0.0]
+
+        def progresso(p: otimizar.Progresso) -> None:
+            agora = time.monotonic()
+            if p.fracao < 1.0 and agora - ultimo[0] < 0.5:
+                return
+            ultimo[0] = agora
+            self.despachar(lambda: self._mostrar_progresso_otim(p))
+
+        def tarefa():
+            return otimizar.executar(comando, destino, duracao, progresso, self.cancel_otim)
+
+        def terminou() -> None:
+            self.otimizando = None
+            item.estado = item.estado_antes_de_otimizar
+            self.lbl_parte.configure(text="")
+
+        def pronto(caminho):
+            terminou()
+            antes = item.tamanho
+            item.aplicar_otimizado(str(caminho), perfil.id)
+            self.barra_total.set(1)
+            self.lbl_total.configure(text=f"Otimizado: {divisao.humano(antes)} → {divisao.humano(item.tamanho)}")
+            self.log(f"✔ Otimizado: {divisao.humano(antes)} → {divisao.humano(item.tamanho)} ({perfil.nome}).")
+            self._atualizar_fila()
+            self._ler_midia(item)
+            self._atualizar_detalhe()
+
+        def falha(erro: BaseException) -> None:
+            terminou()
+            self.lbl_total.configure(text="")
+            self._progresso_fixo = False
+            if isinstance(erro, otimizar.OtimizacaoCancelada):
+                self.log("Otimização cancelada (arquivo parcial apagado).")
+            else:
+                self.log(f"⚠ Não consegui otimizar: {erro}")
+                messagebox.showerror("Otimizar para streaming", str(erro))
+            self._atualizar_fila()
+            self._atualizar_detalhe()
+
+        self._em_segundo_plano(tarefa, pronto, falha)
+
+    def _mostrar_progresso_otim(self, p: otimizar.Progresso) -> None:
+        if self.otimizando is None:
+            return
+        self.barra_total.set(p.fracao)
+        partes = [f"{p.fracao:.0%}"]
+        if p.velocidade:
+            partes.append(f"{p.velocidade:.1f}× o tempo real")
+        if p.tamanho_bytes:
+            partes.append(f"{divisao.humano(p.tamanho_bytes)} gerados")
+        if p.restante_s is not None:
+            partes.append(f"faltam {formatar_tempo(p.restante_s)}")
+        self.lbl_total.configure(text=" · ".join(partes))
+
+    def _voltar_original(self) -> None:
+        item = self.sel
+        if item is None or not item.otimizado or self.otimizando is not None or self.postando is not None:
+            return
+        copia = item.desfazer_otimizado()
+        if copia and os.path.isfile(copia) and messagebox.askyesno(
+                "Voltar ao original", "Apagar a cópia otimizada do disco?\n\n" + copia):
+            self._apagar_arquivo(copia)
+        self.log(f"Voltou ao original: {item.nome_original}")
+        self._ler_midia(item)
+        self._atualizar_fila()
+        self._atualizar_detalhe()
+
+    def _apagar_copia_otimizada(self, item: ItemFila) -> None:
+        """Depois de postar, a cópia otimizada (~20 GB) não serve mais: some do disco se o usuário quer."""
+        if not item.otimizado:
+            return
+        copia = item.desfazer_otimizado()
+        if copia and self.cfg.apagar_otimizado:
+            self._apagar_arquivo(copia)
+        elif copia:
+            self.log(f"Cópia otimizada mantida em {copia}")
+
+    def _apagar_arquivo(self, caminho: str) -> None:
+        try:
+            os.unlink(caminho)
+            self.log(f"Cópia otimizada apagada: {caminho}")
+        except OSError as erro:
+            self.log(f"⚠ Não consegui apagar {caminho}: {erro}")
+
     # ================================================================================== postagem
 
     def _reiniciar_progresso(self) -> None:
@@ -924,6 +1129,8 @@ class Aplicativo(ctk.CTk):
             problemas.append("Conecte ao Telegram (botão no topo)")
         if self.postando is not None:
             problemas.append("Já há um envio em andamento")
+        if self.otimizando is not None:
+            problemas.append("Há uma otimização para streaming em andamento")
         faltas = item.pendencias(self.cfg.tamanho_parte, self.cfg.limite)
         if ignorar_duplicidade:
             faltas = [f for f in faltas if "já foi publicado" not in f]
@@ -1027,6 +1234,7 @@ class Aplicativo(ctk.CTk):
         self.lbl_total.configure(text="Filme postado e registrado")
         self._progresso_fixo = True
         self.log(f"✔ {item.nome_final} postado ({chave}).")
+        self._apagar_copia_otimizada(item)
         self._proximo_envio()
         if not self._fila_envio and self.postando is None:
             messagebox.showinfo("Postado", f"{item.nome_final}\n\nPostado no canal e registrado no bot.")
@@ -1063,6 +1271,9 @@ class Aplicativo(ctk.CTk):
         self._atualizar_detalhe()
 
     def _cancelar(self) -> None:
+        if self.otimizando is not None:
+            self.cancel_otim.cancelar()
+            self.log("Cancelando a otimização…")
         if self.postando is not None:
             self.cancelamento.cancelar()
             self.log("Cancelando… (termina o bloco atual)")
@@ -1111,8 +1322,13 @@ class Aplicativo(ctk.CTk):
         if self.postando is not None and not messagebox.askyesno(
                 "Sair", "Há um envio em andamento. Sair agora o interrompe (dá para retomar depois).\n\nSair mesmo?"):
             return
+        if self.otimizando is not None and not messagebox.askyesno(
+                "Sair", "Há uma otimização para streaming em andamento. Sair agora a cancela e apaga o arquivo "
+                        "parcial.\n\nSair mesmo?"):
+            return
         self._encerrando = True
         self.cancelamento.cancelar()
+        self.cancel_otim.cancelar()
         try:
             self.loop.esperar(self.servico.desconectar(), timeout=5)
         except Exception:  # noqa: BLE001 — fechando de qualquer jeito

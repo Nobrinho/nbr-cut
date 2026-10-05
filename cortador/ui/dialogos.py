@@ -10,6 +10,7 @@ from typing import Callable
 import customtkinter as ctk
 
 from cortador import config as config_mod
+from cortador import otimizar
 from cortador import divisao
 from cortador.config import Configuracao
 from cortador.jobs import Job
@@ -119,6 +120,32 @@ class DialogoConfiguracoes(_Janela):
         )
         self.menu_tamanho.pack(anchor="w", pady=(2, 8))
 
+        _suave(corpo, "Otimizar para streaming (ffmpeg + placa NVIDIA) — gera uma cópia mais leve do filme antes de "
+                      "postar, para tocar sem travar no app.", wraplength=620).pack(anchor="w", pady=(14, 2))
+        _suave(corpo, "ffmpeg (arquivo ou pasta; vazio = procurar sozinho no PATH e no winget)").pack(anchor="w", pady=(4, 0))
+        linha = ctk.CTkFrame(corpo, fg_color="transparent")
+        linha.pack(fill="x", pady=(2, 4))
+        self.var_ffmpeg = tk.StringVar(value=cfg.ffmpeg)
+        ctk.CTkEntry(linha, textvariable=self.var_ffmpeg).pack(side="left", fill="x", expand=True)
+        botao(linha, "Procurar…", self._procurar_ffmpeg, largura=90).pack(side="left", padx=(8, 0))
+        _suave(corpo, "Pasta das cópias otimizadas (precisa de ~25 GB livres por filme 4K; vazio = pasta do app)").pack(
+            anchor="w", pady=(4, 0))
+        linha = ctk.CTkFrame(corpo, fg_color="transparent")
+        linha.pack(fill="x", pady=(2, 4))
+        self.var_pasta_otim = tk.StringVar(value=cfg.pasta_otimizados)
+        ctk.CTkEntry(linha, textvariable=self.var_pasta_otim).pack(side="left", fill="x", expand=True)
+        botao(linha, "Procurar…", self._procurar_pasta_otim, largura=90).pack(side="left", padx=(8, 0))
+        _suave(corpo, "Perfil padrão").pack(anchor="w", pady=(4, 0))
+        self._perfis = {p.nome: p.id for p in otimizar.PERFIS.values()}
+        atual = otimizar.PERFIS.get(cfg.perfil_otimizacao, otimizar.PERFIS[otimizar.PERFIL_PADRAO])
+        self.var_perfil_otim = tk.StringVar(value=atual.nome)
+        ctk.CTkOptionMenu(corpo, variable=self.var_perfil_otim, values=list(self._perfis), width=300,
+                          fg_color=tema.PAINEL_2, button_color=tema.BORDA,
+                          button_hover_color=tema.DESTAQUE_HOVER).pack(anchor="w", pady=(2, 4))
+        self.var_apagar_otim = tk.BooleanVar(value=cfg.apagar_otimizado)
+        ctk.CTkSwitch(corpo, text="Apagar a cópia otimizada depois de postar", variable=self.var_apagar_otim,
+                      progress_color=tema.DESTAQUE).pack(anchor="w", pady=(6, 4))
+
         self.rotulo_problemas = ctk.CTkLabel(corpo, text="", text_color=tema.ALERTA, justify="left", anchor="w",
                                              wraplength=620)
         self.rotulo_problemas.pack(anchor="w", pady=(6, 10), fill="x")
@@ -155,6 +182,17 @@ class DialogoConfiguracoes(_Janela):
         if escolhida:
             self.var_pasta.set(escolhida)
 
+    def _procurar_ffmpeg(self) -> None:
+        escolhido = filedialog.askopenfilename(parent=self, title="Escolha o ffmpeg.exe",
+                                               filetypes=[("ffmpeg", "ffmpeg.exe"), ("Todos", "*.*")])
+        if escolhido:
+            self.var_ffmpeg.set(escolhido)
+
+    def _procurar_pasta_otim(self) -> None:
+        escolhida = filedialog.askdirectory(parent=self, title="Pasta das cópias otimizadas")
+        if escolhida:
+            self.var_pasta_otim.set(escolhida)
+
     def _importar_env(self) -> None:
         escolhido = filedialog.askopenfilename(
             parent=self, title="Escolha o .env do bot", filetypes=[("Arquivo .env", "*.env *.*"), ("Todos", "*.*")],
@@ -189,6 +227,10 @@ class DialogoConfiguracoes(_Janela):
         novo.database_url = self.var_banco.get().strip()
         novo.pasta_registro = self.var_pasta.get().strip()
         novo.premium = self.var_premium.get()
+        novo.ffmpeg = self.var_ffmpeg.get().strip()
+        novo.pasta_otimizados = self.var_pasta_otim.get().strip()
+        novo.perfil_otimizacao = self._perfis.get(self.var_perfil_otim.get(), otimizar.PERFIL_PADRAO)
+        novo.apagar_otimizado = self.var_apagar_otim.get()
         try:
             novo.tamanho_parte = divisao.parse_tamanho(self.var_tamanho.get())
         except divisao.ErroDivisao:
@@ -317,6 +359,42 @@ class DialogoConfirmar(_Janela):
         botao(rodape, "Cancelar", self.destroy, largura=110).pack(side="right")
         botao(rodape, "Postar agora", lambda: (self.destroy(), ao_confirmar()), primario=True, largura=130).pack(
             side="right", padx=8)
+
+
+# ============================================================================ otimizar para streaming
+
+class DialogoOtimizar(_Janela):
+    """Escolha do perfil de otimização, com tamanho, tempo e velocidade de download necessários de cada um."""
+
+    def __init__(self, pai, cabecalho: list[str], opcoes: list[tuple[str, str, str]], padrao: str,
+                 avisos: list[str], ao_confirmar: Callable[[str], None]):
+        """[opcoes]: (id do perfil, nome, texto da estimativa)."""
+        super().__init__(pai, "Otimizar para streaming", 640, 190 + 64 * len(opcoes) + 22 * len(cabecalho)
+                         + 40 * len(avisos))
+        corpo = ctk.CTkFrame(self, fg_color="transparent")
+        corpo.pack(fill="both", expand=True, padx=22, pady=16)
+        _titulo(corpo, "Otimizar para streaming").pack(anchor="w")
+        for linha in cabecalho:
+            _suave(corpo, linha, wraplength=590).pack(anchor="w", pady=(2, 0))
+        self.var_perfil = tk.StringVar(value=padrao if any(o[0] == padrao for o in opcoes) else opcoes[0][0])
+        quadro = ctk.CTkFrame(corpo, fg_color=tema.PAINEL, corner_radius=8)
+        quadro.pack(fill="x", pady=(12, 8))
+        for id_, nome, estimativa in opcoes:
+            bloco = ctk.CTkFrame(quadro, fg_color="transparent")
+            bloco.pack(fill="x", padx=12, pady=(8, 2))
+            ctk.CTkRadioButton(bloco, text=nome, variable=self.var_perfil, value=id_, fg_color=tema.DESTAQUE,
+                               hover_color=tema.DESTAQUE_HOVER, font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+            _suave(bloco, estimativa, wraplength=540).pack(anchor="w", padx=(26, 0))
+        for aviso in avisos:
+            ctk.CTkLabel(corpo, text="⚠ " + aviso, text_color=tema.ALERTA, wraplength=590, justify="left",
+                         anchor="w").pack(anchor="w", pady=(4, 0))
+        _suave(corpo, "O original não é alterado. O resultado é uma cópia MKV em HEVC 10-bit com HDR10 mantido "
+                      "(o Dolby Vision é descartado).", wraplength=590).pack(anchor="w", pady=(8, 0))
+        rodape = ctk.CTkFrame(self, fg_color="transparent")
+        rodape.pack(fill="x", padx=22, pady=(0, 16))
+        botao(rodape, "Cancelar", self.destroy, largura=110).pack(side="right")
+        botao(rodape, "Otimizar", lambda: (self.destroy(), ao_confirmar(self.var_perfil.get())), primario=True,
+              largura=130).pack(side="right", padx=8)
 
 
 # ============================================================================ envios interrompidos
