@@ -2,6 +2,7 @@
 
 Cria uma janela Tk de verdade (escondida). Pula sozinho onde não há ambiente gráfico.
 """
+import asyncio
 import os
 import threading
 import time
@@ -338,7 +339,7 @@ def test_postagem_com_sucesso_atualiza_progresso_estado_e_avisa(app, filme):
     assert app.area_progresso.winfo_manager() == ""
 
 
-def test_progresso_total_considera_so_o_que_falta_enviar(app, filme):
+def test_progresso_total_inclui_o_que_ja_estava_no_canal_na_retomada(app, filme):
     item = _pronto(app, filme)
     job = app.servico.novo_job(item)
     job.partes[3].message_id = 99  # parte 4 já estava no canal (retomada)
@@ -354,8 +355,11 @@ def test_progresso_total_considera_so_o_que_falta_enviar(app, filme):
     _servico_falso(app, comportamento)
     app._rodar_job(item, job)
     assert bombear(app, lambda: item.estado == CONCLUIDO)
-    assert app._bytes_total == pendente
-    assert app._bytes_concluidos == job.partes[2].tamanho
+    i = app._andamento.instantaneo()
+    assert i.total == sum(p.tamanho for p in job.partes)                      # o filme inteiro, não só o que faltava
+    assert i.enviado == job.partes[3].tamanho + job.partes[2].tamanho         # a parte 4 de antes + a 3 desta rodada
+    assert (i.partes_feitas, i.partes_total) == (2, 4)
+    assert pendente < i.total
 
 
 def test_falha_no_envio_deixa_o_item_retomavel(app, filme):
@@ -652,6 +656,7 @@ def test_dialogo_traz_um_perfil_por_opcao_com_estimativas(app, filme, fals, monk
     d = _abrir_dialogo(app, monkeypatch)
     assert [o[0] for o in d.opcoes] == ["4k18", "4k25", "4k12", "1080p8"] and d.padrao == "4k18"
     assert "MB/s" in d.opcoes[0][2] and "RTX 3080" in d.opcoes[0][2]
+    assert "subir ao Telegram: ~" in d.opcoes[0][2] and "limite do Telegram por conta" in d.cabecalho[-1]
     assert "Áudio: pt AC3 5.1, en EAC3 5.1" in d.cabecalho[1]
 
 
@@ -673,7 +678,8 @@ def test_otimizacao_completa_troca_o_arquivo_e_le_os_metadados_de_novo(app, film
     assert destino.endswith("filme.4k18.mkv".replace("filme", Path(filme).stem)) and duracao == pytest.approx(9_318.3)
     assert "hevc_nvenc" in comando and comando[comando.index("-b:v") + 1] == "18M"
     assert bombear(app, lambda: "25%" in app.lbl_total.cget("text"))
-    assert "3.8× o tempo real" in app.lbl_total.cget("text") and "faltam" in app.lbl_total.cget("text")
+    assert bombear(app, lambda: "3.8× o tempo real" in app.lbl_metricas.cget("text"))
+    assert "faltam" in app.lbl_metricas.cget("text") and "ativo há" in app.lbl_metricas.cget("text")
     assert app.botao_cancelar.cget("state") == "normal" and app.botao_postar.cget("state") == "disabled"
     assert app.botao_otimizar.cget("state") == "disabled"
     fals.liberar.set()
@@ -774,3 +780,128 @@ def test_item_otimizando_nao_entra_no_postar_todos(app, filme, fals):
     app._atualizar_fila()
     assert "(0)" in app.botao_postar_todos.cget("text")
     item.estado = PRONTO
+
+
+# ====================================================================== andamento do envio (relógio, parada, resumo)
+
+def _envio_em_andamento(app, filme, fals_servico=None):
+    """Começa um envio que fica parado esperando o teste liberar (nenhum evento depois do primeiro)."""
+    import threading
+    item = _pronto(app, filme)
+    job = app.servico.novo_job(item)
+    liberar = threading.Event()
+
+    async def comportamento(j, emitir, cancelado):
+        emitir(Evento("parte_inicio", parte=1, total_partes=4, total=j.partes[0].tamanho, mensagem="x"))
+        emitir(Evento("progresso", parte=1, total_partes=4, feito=1_000, total=j.partes[0].tamanho))
+        while not liberar.is_set():
+            await asyncio.sleep(0.01)
+        return "tmdb:693134"
+
+    _servico_falso(app, comportamento)
+    app._rodar_job(item, job)
+    assert bombear(app, lambda: app._andamento is not None and app._andamento.instantaneo().enviado >= 1_000)
+    return item, job, liberar
+
+
+def _adiantar(app, segundos):
+    """Faz o relógio do andamento andar [segundos] sem esperar de verdade."""
+    a = app._andamento
+    base = a._relogio
+    a._relogio = lambda: base() + segundos
+
+
+def test_total_e_parte_mostram_o_que_ja_foi_e_quantas_partes(app, filme):
+    item, job, liberar = _envio_em_andamento(app, filme)
+    app.update()
+    assert app.lbl_total.cget("text").startswith("Total: 1000 B de ") and "0 de 4 partes" in app.lbl_total.cget("text")
+    assert app.lbl_parte.cget("text").startswith("Parte 1/4 — 1000 B de ")
+    assert "Preparando" not in app.lbl_parte.cget("text")
+    liberar.set()
+    bombear(app, lambda: item.estado == CONCLUIDO)
+
+
+def test_relogio_de_1s_atualiza_sem_nenhum_evento_e_avisa_quando_parado(app, filme):
+    item, job, liberar = _envio_em_andamento(app, filme)
+    _adiantar(app, 40)                                  # 40 s sem nenhum byte novo e sem nenhum evento
+    app._tick_andamento()
+    texto = app.lbl_metricas.cget("text")
+    assert texto.startswith("⏳ sem progresso há 40s") and "ativo há 40s" in texto
+    liberar.set()
+    bombear(app, lambda: item.estado == CONCLUIDO)
+
+
+def test_aviso_do_telegram_aparece_no_log_e_na_linha_de_parado(app, filme):
+    item, job, liberar = _envio_em_andamento(app, filme)
+    app._evento(item, job, Evento("aviso", mensagem="O Telegram pediu para esperar 16 s (limite de pedidos)"))
+    assert "O Telegram pediu para esperar 16 s" in app.caixa_log.get("1.0", "end")
+    _adiantar(app, 20)
+    app._tick_andamento()
+    assert "sem progresso" in app.lbl_metricas.cget("text") and "esperar 16 s" in app.lbl_metricas.cget("text")
+    liberar.set()
+    bombear(app, lambda: item.estado == CONCLUIDO)
+
+
+def test_ticker_se_reagenda_enquanto_envia_e_para_quando_termina(app, filme):
+    item, job, liberar = _envio_em_andamento(app, filme)
+    assert app._tick_id is not None                     # relógio armado
+    liberar.set()
+    assert bombear(app, lambda: item.estado == CONCLUIDO)
+    app._tick_andamento()
+    assert app._tick_id is None and not app._andamento.rodando
+
+
+def test_ao_concluir_mostra_tempo_total_e_media(app, filme):
+    item, job, liberar = _envio_em_andamento(app, filme)
+    _adiantar(app, 125)
+    liberar.set()
+    assert bombear(app, lambda: item.estado == CONCLUIDO)
+    app.update()
+    assert app.lbl_total.cget("text") == "Filme postado e registrado"
+    assert app.lbl_metricas.cget("text").startswith("Concluído em 2min05s")
+    assert "Concluído em 2min05s" in app.caixa_log.get("1.0", "end")
+
+
+def test_falha_mostra_quanto_tempo_ficou_ativo(app, filme):
+    item = _pronto(app, filme)
+    job = app.servico.novo_job(item)
+
+    async def comportamento(j, emitir, cancelado):
+        emitir(Evento("parte_inicio", parte=1, total_partes=4, total=j.partes[0].tamanho, mensagem="x"))
+        raise ConnectionError("rede caiu")
+
+    _servico_falso(app, comportamento)
+    app._rodar_job(item, job)
+    assert bombear(app, lambda: item.estado == ERRO)
+    app.update()
+    assert app.lbl_metricas.cget("text").startswith("Interrompido após ")
+    assert not app._andamento.rodando
+
+
+def test_log_da_parte_traz_tempo_e_velocidade(app, filme):
+    item = _pronto(app, filme)
+    job = app.servico.novo_job(item)
+
+    async def comportamento(j, emitir, cancelado):
+        emitir(Evento("parte_inicio", parte=1, total_partes=4, total=j.partes[0].tamanho, mensagem="x"))
+        await asyncio.sleep(0.05)
+        emitir(Evento("parte_ok", parte=1, total_partes=4, mensagem="x", dados={"message_id": 77}))
+        return "tmdb:693134"
+
+    _servico_falso(app, comportamento)
+    app._rodar_job(item, job)
+    assert bombear(app, lambda: item.estado == CONCLUIDO)
+    log = app.caixa_log.get("1.0", "end")
+    assert "parte 1/4 no canal (mensagem 77) em " in log and " MB/s" in log
+
+
+def test_otimizacao_mostra_tempo_ativo_e_o_relogio_a_mantem_viva(app, filme, fals, monkeypatch):
+    item = _item_com_midia(app, filme)
+    d = _abrir_dialogo(app, monkeypatch)
+    d.ao_confirmar("4k18")
+    assert bombear(app, lambda: "ativo há" in app.lbl_metricas.cget("text"))
+    app._otim_inicio -= 3_700                           # como se estivesse há 1h01 convertendo, sem evento novo
+    app._tick_andamento()
+    assert "ativo há 1h01min" in app.lbl_metricas.cget("text")
+    fals.liberar.set()
+    bombear(app, lambda: item.otimizado)

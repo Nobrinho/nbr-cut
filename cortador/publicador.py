@@ -88,7 +88,7 @@ class RegistroNulo:
 
 @dataclass
 class Evento:
-    tipo: str            # inicio | parte_inicio | progresso | parte_ok | texto_ok | registrado | indice | concluido | erro
+    tipo: str            # inicio | parte_inicio | progresso | parte_ok | texto_ok | registrado | indice | aviso | concluido | erro
     parte: int | None = None
     total_partes: int | None = None
     feito: int = 0
@@ -162,6 +162,10 @@ class Publicador:
         definir_cancelamento = getattr(self.enviador, "definir_cancelamento", None)
         if definir_cancelamento:
             definir_cancelamento(cancelado)
+        # Esperas do Telegram, retries e blocos reenviados chegam à tela como eventos "aviso".
+        definir_aviso = getattr(self.enviador, "definir_aviso", None)
+        if definir_aviso:
+            definir_aviso(lambda texto: self.emitir(Evento("aviso", mensagem=texto)))
         legenda, cabe = montar_legenda(job)
         texto_separado = not cabe
         job.estado = jobs.ENVIANDO

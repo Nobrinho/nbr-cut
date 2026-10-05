@@ -375,3 +375,184 @@ def test_criar_cliente_usa_o_arquivo_de_sessao_do_app(tmp_path):
         assert "monitor_canais" not in str(cliente.session.filename)
     finally:
         cliente.session.close()
+
+
+# ====================================================================== bloco perdido (FILE_PART_X_MISSING)
+
+class ClienteQueConfere(ClienteFalso):
+    """Imita o servidor: um bloco pode "sumir" no envio e o Telegram só reclama no send_file."""
+
+    def __init__(self, perder=(), perder_sempre=(), **kw):
+        super().__init__(**kw)
+        self._perder = set(perder)                  # perdidos só na 1.ª vez
+        self._perder_sempre = set(perder_sempre)    # perdidos toda vez (o reparo nunca resolve)
+        self.chamadas_send_file = 0
+
+    async def __call__(self, pedido):
+        indice = getattr(pedido, "file_part", None)
+        if indice in self._perder_sempre or indice in self._perder:
+            self._perder.discard(indice)
+            self.pedidos.append(pedido)
+            return True                              # "ok" do Telegram, mas o bloco não foi guardado
+        return await super().__call__(pedido)
+
+    async def send_file(self, entidade, media, caption=None):
+        self.chamadas_send_file += 1
+        arquivo = media.file
+        guardados = self.blocos.get(arquivo.id, {})
+        faltando = [i for i in range(arquivo.parts) if i not in guardados]
+        if faltando:
+            raise errors.FilePartMissingError(None, capture=faltando[0])
+        return await super().send_file(entidade, media, caption)
+
+
+def _blocos_enviados(cliente, indice):
+    return [p for p in cliente.pedidos if getattr(p, "file_part", None) == indice]
+
+
+def test_bloco_perdido_e_reenviado_sem_refazer_a_parte(tmp_path):
+    caminho, dados = _arquivo(tmp_path, 11 * MIB)           # >10 MiB = arquivo grande (22 blocos)
+    cliente = ClienteQueConfere(perder={2})
+    avisos = []
+    enviador = EnviadorTelethon(cliente, "canal", dormir=_sem_espera)
+    enviador.definir_aviso(avisos.append)
+    mid, _ = _enviar(enviador, _parte(0, 11 * MIB, "Filme.mkv.part01of02"), caminho)
+    assert mid == cliente.enviados[0][3] and len(cliente.enviados) == 1
+    assert cliente.chamadas_send_file == 2                        # falhou uma vez, repetiu
+    assert len(_blocos_enviados(cliente, 2)) == 2                 # o bloco 2 foi mandado 2 vezes...
+    assert all(len(_blocos_enviados(cliente, i)) == 1 for i in range(22) if i != 2)   # ...e só ele
+    (upload_id,) = cliente.blocos
+    assert cliente.remontar(upload_id) == dados                   # arquivo íntegro, byte a byte
+    assert len(avisos) == 1 and "bloco 3/22" in avisos[0] and "reenviando só ele" in avisos[0]
+
+
+def test_varios_blocos_perdidos_sao_repostos_um_a_um(tmp_path):
+    caminho, dados = _arquivo(tmp_path, 11 * MIB)
+    cliente = ClienteQueConfere(perder={2, 7, 21})                 # 21 = o último (menor que 512 KiB não, mas o final)
+    mid, _ = _enviar(EnviadorTelethon(cliente, "canal", dormir=_sem_espera),
+                     _parte(0, 11 * MIB), caminho)
+    assert cliente.chamadas_send_file == 4                         # 3 reparos + o envio final
+    (upload_id,) = cliente.blocos
+    assert cliente.remontar(upload_id) == dados
+
+
+def test_ultimo_bloco_curto_e_reposto_com_o_tamanho_certo(tmp_path):
+    tamanho = 10 * MIB + 100_000                                   # último bloco com 100 000 bytes
+    caminho, dados = _arquivo(tmp_path, tamanho)
+    quantidade = -(-tamanho // te.TAMANHO_BLOCO)
+    cliente = ClienteQueConfere(perder={quantidade - 1})
+    _enviar(EnviadorTelethon(cliente, "canal", dormir=_sem_espera), _parte(0, tamanho), caminho)
+    (upload_id,) = cliente.blocos
+    assert len(cliente.blocos[upload_id][quantidade - 1]) == 100_000
+    assert cliente.remontar(upload_id) == dados
+
+
+def test_parte_no_meio_do_arquivo_repoe_o_bloco_do_intervalo_certo(tmp_path):
+    caminho, dados = _arquivo(tmp_path, 30 * MIB)
+    cliente = ClienteQueConfere(perder={5})
+    _enviar(EnviadorTelethon(cliente, "canal", dormir=_sem_espera), _parte(12 * MIB, 11 * MIB, indice=2), caminho)
+    (upload_id,) = cliente.blocos
+    assert cliente.remontar(upload_id) == dados[12 * MIB:23 * MIB]
+
+
+def test_arquivo_pequeno_tambem_repoe_o_bloco(tmp_path):
+    caminho, dados = _arquivo(tmp_path, 3 * te.TAMANHO_BLOCO + 10)  # < 10 MiB: SaveFilePart + md5
+    cliente = ClienteQueConfere(perder={1})
+    _enviar(EnviadorTelethon(cliente, "canal", dormir=_sem_espera), _parte(0, len(dados)), caminho)
+    (upload_id,) = cliente.blocos
+    assert cliente.remontar(upload_id) == dados
+    assert isinstance(_blocos_enviados(cliente, 1)[0], functions.upload.SaveFilePartRequest)
+
+
+def test_desiste_depois_de_muitos_reparos_sem_efeito(tmp_path):
+    caminho, _ = _arquivo(tmp_path, 11 * MIB)
+    cliente = ClienteQueConfere(perder_sempre={2})                 # o servidor nunca guarda o bloco 2
+    with pytest.raises(errors.FilePartMissingError):
+        _enviar(EnviadorTelethon(cliente, "canal", dormir=_sem_espera), _parte(0, 11 * MIB), caminho)
+    assert cliente.chamadas_send_file == te.MAX_REPAROS + 1
+    assert cliente.enviados == []
+
+
+def test_bloco_fora_da_faixa_nao_tenta_reparar(tmp_path):
+    caminho, _ = _arquivo(tmp_path, 11 * MIB)
+
+    class Maluco(ClienteFalso):
+        async def send_file(self, entidade, media, caption=None):
+            raise errors.FilePartMissingError(None, capture=999)
+
+    with pytest.raises(errors.FilePartMissingError):
+        _enviar(EnviadorTelethon(Maluco(), "canal", dormir=_sem_espera), _parte(0, 11 * MIB), caminho)
+
+
+def test_cancelar_durante_o_reparo_interrompe(tmp_path):
+    caminho, _ = _arquivo(tmp_path, 11 * MIB)
+    cliente = ClienteQueConfere(perder={2})
+    enviador = EnviadorTelethon(cliente, "canal", dormir=_sem_espera)
+    original = cliente.send_file
+    chamadas = []
+
+    async def send_file(entidade, media, caption=None):
+        chamadas.append(1)
+        enviador.definir_cancelamento(lambda: True)                # o usuário cancela logo após a falha
+        return await original(entidade, media, caption)
+
+    cliente.send_file = send_file
+    with pytest.raises(EnvioCancelado):
+        _enviar(enviador, _parte(0, 11 * MIB), caminho)
+    assert len(chamadas) == 1 and cliente.enviados == []
+
+
+def test_outro_erro_do_telegram_nao_vira_reparo(tmp_path):
+    caminho, _ = _arquivo(tmp_path, 11 * MIB)
+
+    class SemPermissao(ClienteFalso):
+        async def send_file(self, entidade, media, caption=None):
+            raise errors.ChatWriteForbiddenError(None)
+
+    with pytest.raises(errors.ChatWriteForbiddenError):
+        _enviar(EnviadorTelethon(SemPermissao(), "canal", dormir=_sem_espera), _parte(0, 11 * MIB), caminho)
+
+
+# ====================================================================== avisos de espera e retry
+
+def test_flood_wait_e_retry_geram_avisos(tmp_path):
+    caminho, _ = _arquivo(tmp_path, 600_000)
+    cliente = ClienteFalso(falhas=[errors.FloodWaitError(None, capture=16), ConnectionError("caiu")])
+    avisos = []
+    esperas = []
+
+    async def dormir(s):
+        esperas.append(s)
+
+    enviador = EnviadorTelethon(cliente, "canal", dormir=dormir, simultaneos=1)
+    enviador.definir_aviso(avisos.append)
+    _enviar(enviador, _parte(0, 600_000), caminho)
+    assert esperas[0] == 17
+    assert any("esperar 16 s" in a for a in avisos) and any("Falha de rede (ConnectionError)" in a for a in avisos)
+
+
+def test_aviso_repetido_em_pouco_tempo_aparece_uma_vez(monkeypatch):
+    enviador = EnviadorTelethon(ClienteFalso(), "canal")
+    avisos = []
+    enviador.definir_aviso(avisos.append)
+    relogio = [100.0]
+    monkeypatch.setattr(te.time, "monotonic", lambda: relogio[0])
+    enviador._avisar("mesmo texto")
+    enviador._avisar("mesmo texto")                                # 4 blocos falham juntos: 1 aviso só
+    enviador._avisar("outro texto")
+    relogio[0] += te.INTERVALO_ENTRE_AVISOS_S + 1
+    enviador._avisar("mesmo texto")                                # passou o intervalo: avisa de novo
+    assert avisos == ["mesmo texto", "outro texto", "mesmo texto"]
+
+
+def test_aviso_que_quebra_nao_derruba_o_upload(tmp_path):
+    caminho, _ = _arquivo(tmp_path, 600_000)
+    cliente = ClienteFalso(falhas=[ConnectionError("caiu")])
+    enviador = EnviadorTelethon(cliente, "canal", dormir=_sem_espera)
+
+    def estoura(texto):
+        raise RuntimeError("tela fechada")
+
+    enviador.definir_aviso(estoura)
+    mid, _ = _enviar(enviador, _parte(0, 600_000), caminho)
+    assert mid > 0

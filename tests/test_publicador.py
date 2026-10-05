@@ -25,6 +25,7 @@ def _dados_tmdb(sinopse="Resumo curto.", duracao=166):
 
 class EnviadorFalso:
     def __init__(self, falhar_na_chamada: int | None = None):
+        self.aviso = None
         self.chamadas: list[tuple] = []
         self.apagadas: list[int] = []
         self.dimensoes: list[tuple[int, int]] = []
@@ -32,6 +33,9 @@ class EnviadorFalso:
         self._id = 1000
         self._falhar = falhar_na_chamada
         self._n = 0
+
+    def definir_aviso(self, funcao):
+        self.aviso = funcao
 
     def _novo_id(self) -> int:
         self._id += 1
@@ -185,6 +189,16 @@ def test_arquivo_unico_sobe_como_video_com_a_duracao_do_tmdb(ambiente):
     assert chamada[0] == "parte" and chamada[3] is True      # como_video
     assert chamada[4] == 166 * 60                            # duração em segundos, do TMDB
     assert reg.registrados[0][3] == 1
+
+
+def test_aviso_do_enviador_vira_evento_para_a_tela(ambiente):
+    eventos = []
+    pub, env, _ = _publicador(ambiente, eventos=eventos)
+    _rodar(pub.executar(ambiente["criar_job"](maximo=5_000)))
+    assert env.aviso is not None
+    env.aviso("O Telegram pediu para esperar 16 s")
+    avisos = [e for e in eventos if e.tipo == "aviso"]
+    assert [a.mensagem for a in avisos] == ["O Telegram pediu para esperar 16 s"]
 
 
 def test_arquivo_unico_usa_duracao_e_dimensoes_reais_do_arquivo(ambiente):

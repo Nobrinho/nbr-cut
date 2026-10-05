@@ -150,8 +150,18 @@ def test_mapas_copias_e_dispositions():
     assert _valor(cmd, "-c:s:0") == "copy"
     assert _valor(cmd, "-disposition:a:0") == "default" and _valor(cmd, "-disposition:a:1") == "0"
     assert _valor(cmd, "-disposition:s") == "0"
-    assert _valor(cmd, "-reserve_index_space") == str(otimizar.ESPACO_RESERVADO_INDICE)
+    assert _valor(cmd, "-reserve_index_space") == str(otimizar.ESPACO_INDICE_MINIMO)   # sem duração: o mínimo
     assert "-progress" in cmd and "-nostdin" in cmd
+
+
+def test_espaco_do_indice_cresce_com_a_duracao_e_sobra_para_um_filme_longo():
+    f1 = otimizar.espaco_do_indice(9_318)                           # o F1 precisou de 237 020 bytes
+    assert f1 >= 10 * 237_020 and f1 == 9_318 * otimizar.ESPACO_INDICE_POR_SEGUNDO
+    assert otimizar.espaco_do_indice(120) == otimizar.ESPACO_INDICE_MINIMO       # amostra curta: o mínimo
+    assert otimizar.espaco_do_indice(0) == otimizar.ESPACO_INDICE_MINIMO
+    assert otimizar.espaco_do_indice(10 * 3600 * 100) == otimizar.ESPACO_INDICE_MAXIMO   # absurdo: teto
+    cmd = montar_comando(FF, "in.mkv", "out.mkv", PERFIS["4k18"], otimizar.escolher_trilhas(_f1()), 9_318.3)
+    assert int(_valor(cmd, "-reserve_index_space")) == otimizar.espaco_do_indice(9_318.3) > 237_020
 
 
 def test_audio_nao_copiavel_e_legenda_mov_text_sao_convertidos():
@@ -187,6 +197,8 @@ def test_estimativa_do_f1_bate_com_o_que_medi():
     assert 38 < e.tempo_s / 60 < 45                               # ~41 min
     assert e.download_mb_s == pytest.approx((18 + 2 * 0.64) / 8, abs=0.01) and e.vale_a_pena
     assert 10 < otimizar.estimar(PERFIS["1080p8"], _info(), original).tamanho_bytes / 1e9 < 12
+    assert 4.5 < e.upload_s / 3600 < 5.5                          # ~21 GiB a 1,2 MiB/s ≈ 5 h de upload
+    assert otimizar.estimar(PERFIS["1080p8"], _info(), original).upload_s < e.upload_s / 2
     assert otimizar.estimar(PERFIS["1080p8"], _info(), original).tempo_s < e.tempo_s / 2
 
 

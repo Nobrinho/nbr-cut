@@ -52,6 +52,33 @@ MÍDIA) gera uma **cópia** mais leve antes de postar; o original nunca é alter
 - **Requisitos:** placa NVIDIA com driver recente e `ffmpeg` com NVENC: `winget install Gyan.FFmpeg`. O app procura
   no PATH e no winget; ou aponte o `ffmpeg.exe` em Configurações. Precisa de espaço livre para a cópia (~25 GB por 4K).
 
+## Velocidade do upload e progresso
+
+O envio usa o Telethon com blocos de 512 KB (4 em voo). **O teto é do Telegram, por conta**: medido numa conta sem
+Premium, com internet de 143 Mbps de upstream, o upload ficou em **~1,2 MiB/s no total**, igual com 4, 8, 16 e 32
+blocos em voo e com 1, 2 ou 4 conexões em paralelo (sem esperas do Telegram). Mais concorrência não ajuda, então o
+app não tenta; o que reduz o tempo é **enviar menos bytes** (ver *Otimizar para streaming*). Para dar uma noção:
+
+| Arquivo | Upload a ~1,2 MiB/s |
+|---|---|
+| remux 4K de 76 GiB | ~18 h |
+| 4K a 18 Mbps (~21 GiB) | ~5 h |
+| 4K a 12 Mbps (~15 GiB) | ~3,5 h |
+| 1080p a 8 Mbps (~10 GiB) | ~2,5 h |
+
+O diálogo do "Otimizar" já mostra esse tempo por perfil. Se a conta for Premium o resultado pode ser outro (não medido).
+
+Durante o envio a tela mostra: a parte atual (`Parte 8/12 — 412 MiB de 1,79 GiB`), o **total contando o que já subiu**
+(também ao retomar), a **velocidade** (agora e média), **há quanto tempo está ativo**, quanto falta e o **horário
+previsto de término**. Um relógio de 1 s mantém tudo vivo mesmo sem eventos: se passam 15 s sem nenhum byte novo,
+aparece `⏳ sem progresso há 40 s` com o motivo (espera do Telegram, falha de rede). O log registra o tempo e a
+velocidade de cada parte e, no fim, `Concluído em 5h12min (média 1,1 MB/s)`.
+
+**Bloco perdido:** o Telegram só confere se todos os blocos chegaram ao final da parte. Se disser que faltou o
+bloco *k* (`Part k of the file is missing`), o app relê só aquele bloco do arquivo original, reenvia com o mesmo
+`file_id` e repete o envio da mensagem (até 8 vezes), em vez de refazer a parte inteira (~25 min). Validado com o
+Telegram real: bloco 2 pulado de propósito → reparo → arquivo baixado de volta idêntico byte a byte.
+
 ## Independente do bot
 
 O app **não importa nada** do repositório do bot (`agente_filmes`). O que ele compartilha com o bot é um

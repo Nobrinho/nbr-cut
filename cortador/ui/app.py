@@ -7,7 +7,6 @@ de corte, prévia da legenda e a postagem com progresso. Nada de regra de negóc
 from __future__ import annotations
 
 import asyncio
-import collections
 import concurrent.futures
 import gc
 import os
@@ -22,6 +21,7 @@ import customtkinter as ctk
 
 from cortador import __version__, busca, divisao, execucao, midia, otimizar, registro
 from cortador import config as config_mod
+from cortador.andamento import Andamento, formatar_tempo, formatar_velocidade  # noqa: F401 (reexportados p/ testes)
 from cortador.config import Configuracao
 from cortador.fila import (CANCELADO, CONCLUIDO, ENVIANDO, ERRO, NOVO, OTIMIZANDO, PRONTO, ItemFila, eh_video)
 from cortador.jobs import Job
@@ -50,21 +50,6 @@ def _secao(pai, titulo: str) -> ctk.CTkFrame:
     interno = ctk.CTkFrame(cartao, fg_color="transparent")
     interno.pack(fill="x", padx=14, pady=(0, 12))
     return cartao, interno
-
-
-def formatar_velocidade(bytes_por_s: float) -> str:
-    return f"{bytes_por_s / divisao.MIB:.1f} MB/s"
-
-
-def formatar_tempo(segundos: float) -> str:
-    segundos = int(max(segundos, 0))
-    horas, resto = divmod(segundos, 3600)
-    minutos, seg = divmod(resto, 60)
-    if horas:
-        return f"{horas}h{minutos:02d}min"
-    if minutos:
-        return f"{minutos}min{seg:02d}s"
-    return f"{seg}s"
 
 
 class Aplicativo(ctk.CTk):
@@ -105,6 +90,7 @@ class Aplicativo(ctk.CTk):
         self._miniaturas_refs: list = []
         self._trocando = False  # True = lista de candidatos aberta mesmo com um filme já escolhido
         self._progresso_fixo = False  # mantém o resumo do último envio na tela até trocar de item
+        self._tick_id = None          # relógio de 1 s que mantém velocidade/tempo vivos mesmo sem eventos
         self._reiniciar_progresso()
 
         self._montar()
@@ -301,6 +287,8 @@ class Aplicativo(ctk.CTk):
                                               height=8)
         self.barra_total.pack(fill="x")
         self.barra_total.set(0)
+        self.lbl_metricas = _txt(self.area_progresso, "", text_color=tema.TEXTO_SUAVE, wraplength=860, justify="left")
+        self.lbl_metricas.pack(anchor="w", pady=(4, 0))
 
     def _montar_log(self) -> None:
         self.caixa_log = ctk.CTkTextbox(self, height=92, fg_color=tema.PAINEL, text_color=tema.TEXTO_SUAVE,
@@ -956,7 +944,10 @@ class Aplicativo(ctk.CTk):
             e = otimizar.estimar(perfil, item.midia, item.tamanho, len(selecao.audios))
             opcoes.append((perfil.id, perfil.nome,
                            f"~{divisao.humano(e.tamanho_bytes)} · cerca de {formatar_tempo(e.tempo_s)} (RTX 3080) · "
-                           f"pede ~{e.download_mb_s:.1f} MB/s de download"))
+                           f"pede ~{e.download_mb_s:.1f} MB/s de download · subir ao Telegram: ~{formatar_tempo(e.upload_s)}"))
+        if opcoes:
+            cabecalho.append(f"Upload medido: ~{otimizar.UPLOAD_MIB_S_MEDIDO:.1f} MB/s (limite do Telegram por conta; "
+                             f"não melhora com mais conexões).")
         avisos = []
         padrao = otimizar.PERFIS.get(self.cfg.perfil_otimizacao) or otimizar.PERFIS[otimizar.PERFIL_PADRAO]
         if not otimizar.estimar(padrao, item.midia, item.tamanho, len(selecao.audios)).vale_a_pena:
@@ -974,8 +965,8 @@ class Aplicativo(ctk.CTk):
                               f"{divisao.humano(livre)} livres em {pasta}. Libere espaço ou troque a pasta em Configurações.")
             return
         destino = otimizar.caminho_de_saida(item.caminho, pasta, perfil)
-        comando = otimizar.montar_comando(ferramentas, item.caminho, str(destino), perfil, selecao)
         duracao = item.midia.duracao_s or 0.0
+        comando = otimizar.montar_comando(ferramentas, item.caminho, str(destino), perfil, selecao, duracao)
         item.estado_antes_de_otimizar = item.estado
         item.estado, item.mensagem = OTIMIZANDO, ""
         self.otimizando = item
@@ -987,6 +978,9 @@ class Aplicativo(ctk.CTk):
         self.barra_total.set(0)
         self.lbl_parte.configure(text=f"Otimizando para streaming: {perfil.nome}")
         self.lbl_total.configure(text="Começando…")
+        self.lbl_metricas.configure(text="", text_color=tema.TEXTO_SUAVE)
+        self._otim_inicio, self._otim_ultimo = time.monotonic(), None
+        self._iniciar_ticker()
         self.log(f"Otimizando {item.nome_original} → {destino} ({perfil.nome}, ~{divisao.humano(estimativa.tamanho_bytes)})")
         self._atualizar_fila()
         self._atualizar_detalhe()
@@ -1033,18 +1027,25 @@ class Aplicativo(ctk.CTk):
 
         self._em_segundo_plano(tarefa, pronto, falha)
 
-    def _mostrar_progresso_otim(self, p: otimizar.Progresso) -> None:
+    def _mostrar_progresso_otim(self, p: otimizar.Progresso | None) -> None:
         if self.otimizando is None:
             return
+        self._otim_ultimo = p
+        ativo = formatar_tempo(time.monotonic() - self._otim_inicio)
+        if p is None:
+            self.lbl_total.configure(text="Começando…")
+            self.lbl_metricas.configure(text=f"ativo há {ativo}")
+            return
         self.barra_total.set(p.fracao)
-        partes = [f"{p.fracao:.0%}"]
+        self.lbl_total.configure(text=f"{p.fracao:.0%} convertido")
+        partes = [f"ativo há {ativo}"]
         if p.velocidade:
             partes.append(f"{p.velocidade:.1f}× o tempo real")
         if p.tamanho_bytes:
             partes.append(f"{divisao.humano(p.tamanho_bytes)} gerados")
         if p.restante_s is not None:
-            partes.append(f"faltam {formatar_tempo(p.restante_s)}")
-        self.lbl_total.configure(text=" · ".join(partes))
+            partes.append(f"faltam ~{formatar_tempo(p.restante_s)}")
+        self.lbl_metricas.configure(text=" · ".join(partes))
 
     def _voltar_original(self) -> None:
         item = self.sel
@@ -1079,9 +1080,11 @@ class Aplicativo(ctk.CTk):
     # ================================================================================== postagem
 
     def _reiniciar_progresso(self) -> None:
-        self._bytes_total = 0
-        self._bytes_concluidos = 0
-        self._amostras: collections.deque = collections.deque(maxlen=64)
+        self._andamento: Andamento | None = None
+        self._concluidos = 0                       # bytes das partes já terminadas (incluindo as de antes da retomada)
+        self._parte_inicio: dict[int, float] = {}
+        self._otim_inicio = 0.0
+        self._otim_ultimo: otimizar.Progresso | None = None
 
     def _postar_selecionado(self) -> None:
         item = self.sel
@@ -1164,7 +1167,15 @@ class Aplicativo(ctk.CTk):
         item.job_id, item.estado, item.mensagem = job.id, ENVIANDO, ""
         self.cancelamento.zerar()
         self._reiniciar_progresso()
-        self._bytes_total = sum(p.tamanho for p in job.partes if not p.message_id)
+        enviadas = [p for p in job.partes if p.message_id]
+        self._concluidos = sum(p.tamanho for p in enviadas)
+        self._andamento = Andamento()
+        self._andamento.iniciar(total_bytes=sum(p.tamanho for p in job.partes), ja_enviado=self._concluidos,
+                                partes_total=job.total_partes, partes_feitas=len(enviadas))
+        self.lbl_parte.configure(text="Preparando o envio…")
+        self.lbl_metricas.configure(text="", text_color=tema.TEXTO_SUAVE)
+        self._mostrar_andamento()
+        self._iniciar_ticker()
         self.barra_parte.set(0)
         self.barra_total.set(0)
         self.log(f"▶ Postando {job.nome_base} ({job.total_partes} parte(s)) no canal {job.canal}")
@@ -1186,17 +1197,35 @@ class Aplicativo(ctk.CTk):
                              lambda chave: self._postou(item, chave), lambda erro: self._falhou(item, job, erro))
 
     def _evento(self, item: ItemFila, job: Job, ev: Evento) -> None:
+        a = self._andamento
         if ev.tipo == "parte_inicio":
-            self.lbl_parte.configure(text=f"Enviando parte {ev.parte}/{ev.total_partes}: {ev.mensagem}")
+            self._parte_inicio[ev.parte] = time.monotonic()
+            self.lbl_parte.configure(text=f"Parte {ev.parte}/{ev.total_partes} — 0 de {divisao.humano(ev.total)}")
             self.barra_parte.set(0)
         elif ev.tipo == "progresso":
             self.barra_parte.set(ev.feito / ev.total if ev.total else 0)
-            self._atualizar_total(self._bytes_concluidos + ev.feito)
+            self.lbl_parte.configure(
+                text=f"Parte {ev.parte}/{ev.total_partes} — {divisao.humano(ev.feito)} de {divisao.humano(ev.total)}")
+            if a is not None:
+                a.registrar(self._concluidos + ev.feito)
+            self._mostrar_andamento()
         elif ev.tipo == "parte_ok":
             tamanho = next((p.tamanho for p in job.partes if p.indice == ev.parte), 0)
-            self._bytes_concluidos += tamanho
-            self._atualizar_total(self._bytes_concluidos)
-            self.log(f"  ✔ parte {ev.parte}/{ev.total_partes} no canal (mensagem {ev.dados.get('message_id')})")
+            self._concluidos += tamanho
+            if a is not None:
+                a.registrar(self._concluidos)
+                a.parte_concluida()
+            self._mostrar_andamento()
+            inicio = self._parte_inicio.pop(ev.parte, None)
+            duracao = ""
+            if inicio is not None and tamanho:
+                dt = max(time.monotonic() - inicio, 0.001)
+                duracao = f" em {formatar_tempo(dt)} a {formatar_velocidade(tamanho / dt)}"
+            self.log(f"  ✔ parte {ev.parte}/{ev.total_partes} no canal (mensagem {ev.dados.get('message_id')}){duracao}")
+        elif ev.tipo == "aviso":
+            if a is not None:
+                a.avisar(ev.mensagem)
+            self.log(f"  ⏳ {ev.mensagem}")
         elif ev.tipo == "texto_ok":
             self.log("  ✔ texto com os metadados no canal")
         elif ev.tipo == "registrado":
@@ -1211,19 +1240,47 @@ class Aplicativo(ctk.CTk):
         elif ev.tipo == "erro":
             self.log(f"  ⚠ {ev.mensagem}")
 
-    def _atualizar_total(self, enviado: int) -> None:
-        agora = time.monotonic()
-        self._amostras.append((agora, enviado))
-        fracao = enviado / self._bytes_total if self._bytes_total else 0
-        self.barra_total.set(min(fracao, 1))
-        texto = f"{divisao.humano(enviado)} de {divisao.humano(self._bytes_total)} ({fracao:.0%})"
-        recentes = [(t, b) for t, b in self._amostras if agora - t <= 10]
-        if len(recentes) >= 2 and recentes[-1][0] - recentes[0][0] >= 1.0:
-            velocidade = (recentes[-1][1] - recentes[0][1]) / (recentes[-1][0] - recentes[0][0])
-            if velocidade > 0:
-                faltam = (self._bytes_total - enviado) / velocidade
-                texto += f" · {formatar_velocidade(velocidade)} · faltam ~{formatar_tempo(faltam)}"
-        self.lbl_total.configure(text=texto)
+    def _mostrar_andamento(self) -> None:
+        a = self._andamento
+        if a is None:
+            return
+        i = a.instantaneo()
+        self.barra_total.set(i.fracao)
+        self.lbl_total.configure(text=a.linha_total(i))
+        self.lbl_metricas.configure(text=a.linha_metricas(i), text_color=tema.ALERTA if i.parado else tema.TEXTO_SUAVE)
+
+    def _iniciar_ticker(self) -> None:
+        if self._tick_id is None and not self._encerrando:
+            self._tick_id = self.after(1000, self._tick_andamento)
+
+    def _tick_andamento(self) -> None:
+        """Uma vez por segundo, com ou sem eventos: velocidade, tempo ativo e "sem progresso" continuam andando."""
+        self._tick_id = None
+        if self._encerrando:
+            return
+        ativo = False
+        if self._andamento is not None and self._andamento.rodando:
+            self._mostrar_andamento()
+            ativo = True
+        if self.otimizando is not None:
+            self._mostrar_progresso_otim(self._otim_ultimo)
+            ativo = True
+        if ativo:
+            self._iniciar_ticker()
+
+    def _encerrar_andamento(self, *, concluido: bool) -> None:
+        a = self._andamento
+        if a is None:
+            return
+        a.encerrar()
+        i = a.instantaneo()
+        self.barra_total.set(i.fracao)
+        if concluido:
+            self.lbl_total.configure(text="Filme postado e registrado")
+            self.lbl_metricas.configure(text=a.resumo_final(), text_color=tema.SUCESSO)
+        else:
+            self.lbl_total.configure(text=a.linha_total(i))
+            self.lbl_metricas.configure(text=f"Interrompido após {formatar_tempo(i.ativo_s)} ativo", text_color=tema.ALERTA)
 
     def _postou(self, item: ItemFila, chave: str) -> None:
         item.estado, item.mensagem = CONCLUIDO, ""
@@ -1231,8 +1288,10 @@ class Aplicativo(ctk.CTk):
         self.barra_parte.set(1)
         self.barra_total.set(1)
         self.lbl_parte.configure(text="")
-        self.lbl_total.configure(text="Filme postado e registrado")
+        self._encerrar_andamento(concluido=True)
         self._progresso_fixo = True
+        if self._andamento is not None:
+            self.log(f"  {self._andamento.resumo_final()}")
         self.log(f"✔ {item.nome_final} postado ({chave}).")
         self._apagar_copia_otimizada(item)
         self._proximo_envio()
@@ -1243,6 +1302,7 @@ class Aplicativo(ctk.CTk):
         self._fila_envio.clear()
         self.postando = None
         self.lbl_parte.configure(text="")
+        self._encerrar_andamento(concluido=False)
         if isinstance(erro, PublicacaoCancelada):
             item.estado, item.mensagem = CANCELADO, "cancelado — dá para retomar"
             self.log("■ Envio cancelado.")
@@ -1327,6 +1387,9 @@ class Aplicativo(ctk.CTk):
                         "parcial.\n\nSair mesmo?"):
             return
         self._encerrando = True
+        if self._tick_id is not None:
+            self.after_cancel(self._tick_id)
+            self._tick_id = None
         self.cancelamento.cancelar()
         self.cancel_otim.cancelar()
         try:

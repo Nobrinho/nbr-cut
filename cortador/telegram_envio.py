@@ -13,6 +13,8 @@ import asyncio
 import hashlib
 import mimetypes
 import os
+import time
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from telethon import errors, functions, helpers, types
@@ -25,6 +27,8 @@ LIMITE_ARQUIVO_GRANDE = 10 * 1024 * 1024  # acima disso o Telegram usa o fluxo d
 SIMULTANEOS = 4                     # blocos em voo ao mesmo tempo
 TENTATIVAS = 5
 ESPERA_MAXIMA_S = 30
+MAX_REPAROS = 8                     # blocos que o Telegram pode dizer que perdeu antes de desistirmos
+INTERVALO_ENTRE_AVISOS_S = 10.0     # o mesmo aviso (4 blocos falham juntos) não se repete antes disto
 
 Progresso = Callable[[int, int], None]
 
@@ -84,6 +88,17 @@ def _propagar(tarefas) -> None:
         raise primeira
 
 
+@dataclass
+class Subida:
+    """Arquivo já enviado em blocos, mas ainda não anexado a uma mensagem.
+
+    O Telegram só confere se TODOS os blocos chegaram no `send_file`; `reenviar(indice)` repõe um bloco que ele
+    disse não ter (mesmo `file_id`), sem refazer as dezenas de minutos de upload da parte."""
+    arquivo: types.InputFile | types.InputFileBig
+    quantidade: int
+    reenviar: Callable[[int], Awaitable[None]]
+
+
 class EnviadorTelethon:
     def __init__(
         self,
@@ -100,9 +115,26 @@ class EnviadorTelethon:
         self.tentativas = max(1, tentativas)
         self._dormir = dormir
         self._cancelado: Callable[[], bool] = lambda: False
+        self._aviso: Callable[[str], None] = lambda texto: None
+        self._ultimo_aviso: tuple[str, float] = ("", 0.0)
 
     def definir_cancelamento(self, funcao: Callable[[], bool]) -> None:
         self._cancelado = funcao
+
+    def definir_aviso(self, funcao: Callable[[str], None]) -> None:
+        """[funcao] recebe o que o usuário deve saber (espera imposta pelo Telegram, retry, bloco reenviado)."""
+        self._aviso = funcao
+
+    def _avisar(self, texto: str) -> None:
+        agora = time.monotonic()
+        ultimo, quando = self._ultimo_aviso
+        if texto == ultimo and agora - quando < INTERVALO_ENTRE_AVISOS_S:
+            return
+        self._ultimo_aviso = (texto, agora)
+        try:
+            self._aviso(texto)
+        except Exception:  # noqa: BLE001 — aviso nunca derruba o upload
+            pass
 
     # ----------------------------------------------------------------------- upload
 
@@ -117,15 +149,38 @@ class EnviadorTelethon:
         largura: int = 0,
         altura: int = 0,
     ) -> int:
-        arquivo = await self._subir(caminho, parte.offset, parte.tamanho, parte.nome, progresso)
-        media = montar_media(arquivo, parte.nome, como_video=como_video, duracao_s=duracao_s,
+        subida = await self._subir(caminho, parte.offset, parte.tamanho, parte.nome, progresso)
+        media = montar_media(subida.arquivo, parte.nome, como_video=como_video, duracao_s=duracao_s,
                              largura=largura, altura=altura)
-        mensagem = await self._com_retry(
-            lambda: self.cliente.send_file(self.entidade, media, caption=legenda)
-        )
-        return mensagem.id
+        reparos = 0
+        while True:
+            try:
+                mensagem = await self._com_retry(
+                    lambda: self.cliente.send_file(self.entidade, media, caption=legenda)
+                )
+                return mensagem.id
+            except errors.FilePartMissingError as erro:
+                # "Part N of the file is missing": o Telegram não achou o bloco N. Repõe SÓ ele e repete.
+                if reparos >= MAX_REPAROS or not 0 <= erro.which < subida.quantidade:
+                    raise
+                if self._cancelado():
+                    raise EnvioCancelado() from erro
+                reparos += 1
+                self._avisar(f"O Telegram não recebeu o bloco {erro.which + 1}/{subida.quantidade} de {parte.nome}: "
+                             f"reenviando só ele ({reparos}/{MAX_REPAROS})")
+                await subida.reenviar(erro.which)
 
-    async def _subir(self, caminho: str, offset: int, tamanho: int, nome: str, progresso: Progresso):
+    async def _enviar_bloco(self, upload_id: int, indice: int, quantidade: int, dados: bytes, grande: bool,
+                            nome: str) -> None:
+        if grande:
+            pedido = functions.upload.SaveBigFilePartRequest(upload_id, indice, quantidade, dados)
+        else:
+            pedido = functions.upload.SaveFilePartRequest(upload_id, indice, dados)
+        ok = await self._com_retry(lambda: self.cliente(pedido))
+        if not ok:
+            raise IOError(f"O Telegram recusou o bloco {indice + 1}/{quantidade} de {nome}")
+
+    async def _subir(self, caminho: str, offset: int, tamanho: int, nome: str, progresso: Progresso) -> Subida:
         """Sobe [offset, offset+tamanho) de [caminho] em blocos de 512 KB, vários em voo."""
         grande = tamanho > LIMITE_ARQUIVO_GRANDE
         quantidade = max(1, -(-tamanho // TAMANHO_BLOCO))
@@ -135,13 +190,7 @@ class EnviadorTelethon:
 
         async def enviar_bloco(indice: int, dados: bytes) -> None:
             nonlocal feito
-            if grande:
-                pedido = functions.upload.SaveBigFilePartRequest(upload_id, indice, quantidade, dados)
-            else:
-                pedido = functions.upload.SaveFilePartRequest(upload_id, indice, dados)
-            ok = await self._com_retry(lambda: self.cliente(pedido))
-            if not ok:
-                raise IOError(f"O Telegram recusou o bloco {indice + 1}/{quantidade} de {nome}")
+            await self._enviar_bloco(upload_id, indice, quantidade, dados, grande, nome)
             feito += len(dados)
             progresso(feito, tamanho)
 
@@ -168,9 +217,20 @@ class EnviadorTelethon:
             if pendentes:
                 await asyncio.gather(*pendentes, return_exceptions=True)
             raise
+
+        async def reenviar(indice: int) -> None:
+            with LeitorDeIntervalo(caminho, offset, tamanho) as leitor:
+                leitor.seek(indice * TAMANHO_BLOCO)
+                dados = await asyncio.to_thread(leitor.read, TAMANHO_BLOCO)
+            if not dados:
+                raise IOError(f"Bloco {indice + 1} fora do arquivo ({nome})")
+            await self._enviar_bloco(upload_id, indice, quantidade, dados, grande, nome)
+
         if grande:
-            return types.InputFileBig(id=upload_id, parts=quantidade, name=nome)
-        return types.InputFile(id=upload_id, parts=quantidade, name=nome, md5_checksum=md5.hexdigest())
+            arquivo = types.InputFileBig(id=upload_id, parts=quantidade, name=nome)
+        else:
+            arquivo = types.InputFile(id=upload_id, parts=quantidade, name=nome, md5_checksum=md5.hexdigest())
+        return Subida(arquivo, quantidade, reenviar)
 
     # ----------------------------------------------------------------------- mensagens
 
@@ -201,11 +261,17 @@ class EnviadorTelethon:
             except errors.FloodWaitError as erro:
                 if tentativa == self.tentativas:
                     raise
-                await self._dormir(min(erro.seconds + 1, 600))  # o Telegram diz quanto esperar
-            except _TRANSITORIOS:
+                espera = min(erro.seconds + 1, 600)  # o Telegram diz quanto esperar
+                self._avisar(f"O Telegram pediu para esperar {erro.seconds} s (limite de pedidos); "
+                             f"retoma sozinho ({tentativa}/{self.tentativas})")
+                await self._dormir(espera)
+            except _TRANSITORIOS as erro:
                 if tentativa == self.tentativas:
                     raise
-                await self._dormir(min(2 ** tentativa, ESPERA_MAXIMA_S))
+                espera = min(2 ** tentativa, ESPERA_MAXIMA_S)
+                self._avisar(f"Falha de rede ({type(erro).__name__}); nova tentativa em {espera} s "
+                             f"({tentativa}/{self.tentativas})")
+                await self._dormir(espera)
 
 
 # --------------------------------------------------------------------------- sessão e canal

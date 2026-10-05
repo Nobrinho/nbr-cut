@@ -30,9 +30,14 @@ from cortador.midia import InfoMidia
 # Velocidade (× tempo real) medida na RTX 3080 com o preset p4; só serve de estimativa na tela.
 VELOCIDADE_4K = 3.8
 VELOCIDADE_1080P = 9.0
+# Upload medido (2026-10-05, conta sem Premium, internet de 143 Mbps): ~1,2 MiB/s no total, igual com 4 a 32 blocos
+# em voo e com 1, 2 ou 4 conexões — o teto é do Telegram, por conta. Só serve de estimativa na tela.
+UPLOAD_MIB_S_MEDIDO = 1.2
 AUDIO_MBPS_ESTIMADO = 0.64          # cada trilha AC3/EAC3 5.1 copiada
 SOBRA_DO_CONTAINER = 1.01
-ESPACO_RESERVADO_INDICE = 200_000   # bytes no começo do MKV para o índice (Cues)
+ESPACO_INDICE_MINIMO = 200_000      # bytes reservados no começo do MKV para o índice (Cues), no mínimo
+ESPACO_INDICE_POR_SEGUNDO = 400     # o F1 (2h35) usou 237 KB = ~25 B/s; 400 B/s dá mais de 10× de folga
+ESPACO_INDICE_MAXIMO = 16_000_000
 CODECS_COM_DECODIFICACAO_POR_PLACA = {"hevc", "h264", "vp9", "av1"}
 CODECS_DE_AUDIO_COPIAVEIS = {"eac3", "ac3", "aac", "opus", "mp3"}
 CODECS_DE_LEGENDA_TEXTO = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
@@ -259,6 +264,7 @@ class Estimativa:
     tempo_s: float
     mbps_total: float
     download_mb_s: float
+    upload_s: float                 # quanto leva para SUBIR o resultado ao Telegram (a ~UPLOAD_MIB_S_MEDIDO)
     vale_a_pena: bool               # o original é bem maior que o resultado?
 
 
@@ -271,7 +277,8 @@ def estimar(perfil: Perfil, info: InfoMidia, tamanho_original: int, n_audios: in
     original = info.bitrate_medio_mbps(tamanho_original) or 0.0
     return Estimativa(
         tamanho_bytes=tamanho, tempo_s=duracao / velocidade if duracao else 0.0, mbps_total=mbps,
-        download_mb_s=mbps / 8, vale_a_pena=original >= mbps * 1.25,
+        download_mb_s=mbps / 8, upload_s=tamanho / (UPLOAD_MIB_S_MEDIDO * 1024 * 1024),
+        vale_a_pena=original >= mbps * 1.25,
     )
 
 
@@ -295,7 +302,14 @@ def _dimensoes_1080p(v: Trilha) -> tuple[int, int]:
     return largura, altura
 
 
-def montar_comando(ff: Ferramentas, origem: str, destino: str, perfil: Perfil, selecao: Selecao) -> list[str]:
+def espaco_do_indice(duracao_s: float) -> int:
+    """Bytes a reservar para o índice. Pouco demais NÃO é um erro na hora: o ffmpeg só descobre ao final,
+    depois de converter o filme inteiro ("Insufficient space reserved for Cues"), e a conversão se perde."""
+    return int(min(max(duracao_s * ESPACO_INDICE_POR_SEGUNDO, ESPACO_INDICE_MINIMO), ESPACO_INDICE_MAXIMO))
+
+
+def montar_comando(ff: Ferramentas, origem: str, destino: str, perfil: Perfil, selecao: Selecao,
+                   duracao_s: float = 0.0) -> list[str]:
     """Linha de comando do ffmpeg para [perfil]. O vídeo vai por NVENC (preset p4, VBR com teto de 1,4×)."""
     v = selecao.video
     placa = v.codec in CODECS_COM_DECODIFICACAO_POR_PLACA
@@ -346,7 +360,7 @@ def montar_comando(ff: Ferramentas, origem: str, destino: str, perfil: Perfil, s
         cmd += [f"-disposition:a:{posicao}", "default" if posicao == 0 else "0"]
     if selecao.legendas:
         cmd += ["-disposition:s", "0"]
-    cmd += ["-reserve_index_space", str(ESPACO_RESERVADO_INDICE), "-f", "matroska", destino]
+    cmd += ["-reserve_index_space", str(espaco_do_indice(duracao_s)), "-f", "matroska", destino]
     return cmd
 
 
