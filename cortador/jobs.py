@@ -47,6 +47,10 @@ class Job:
     canal: str                  # destino em texto (retomar em outro canal seria um erro)
     partes: list[ParteJob]
     texto_message_id: int | None = None
+    # Lidos do arquivo (midia.py) para o atributo de vídeo do envio único; 0/None = usar a duração do TMDB.
+    duracao_s: int | None = None
+    largura: int = 0
+    altura: int = 0
     estado: str = NOVO
     erro: str | None = None
     criado_em: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
@@ -84,6 +88,9 @@ class Job:
         qualidade: str | None,
         canal: str,
         maximo: int,
+        duracao_s: int | None = None,
+        largura: int = 0,
+        altura: int = 0,
     ) -> "Job":
         info = os.stat(caminho)
         plano = divisao.montar_partes(nome_base, info.st_size, maximo)
@@ -98,6 +105,9 @@ class Job:
             audio=audio,
             qualidade=qualidade,
             canal=str(canal),
+            duracao_s=duracao_s,
+            largura=largura,
+            altura=altura,
             partes=[ParteJob(p.indice, p.total_partes, p.offset, p.tamanho, p.nome) for p in plano],
         )
 

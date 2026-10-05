@@ -186,6 +186,15 @@ def test_arquivo_unico_vai_como_video_com_atributo_e_streaming(tmp_path):
     assert media.mime_type == "video/x-matroska" and media.force_file is False
 
 
+def test_atributo_de_video_leva_largura_e_altura_quando_conhecidas():
+    media = te.montar_media(None, "Filme.mkv", como_video=True, duracao_s=9_318, largura=3840, altura=2160)
+    video = next(a for a in media.attributes if isinstance(a, types.DocumentAttributeVideo))
+    assert (video.duration, video.w, video.h) == (9_318, 3840, 2160)
+    sem = te.montar_media(None, "Filme.mkv", como_video=True, duracao_s=None)
+    video = next(a for a in sem.attributes if isinstance(a, types.DocumentAttributeVideo))
+    assert (video.duration, video.w, video.h) == (0, 0, 0)
+
+
 def test_mime_por_extensao():
     assert te.mime_do_nome("a.mkv") == "video/x-matroska"
     assert te.mime_do_nome("a.MP4") == "video/mp4"

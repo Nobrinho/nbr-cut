@@ -183,6 +183,109 @@ def test_item_pronto_mostra_nome_plano_e_legenda(app, filme):
     assert item.estado == PRONTO
 
 
+def _info_dv7():
+    from cortador import midia
+    video = midia.Video("HEVC", 3840, 2160, 23.976, 10, None, 7, 6, True)
+    return midia.InfoMidia("mkv", 9_318.3, video, [midia.Audio("TrueHD", 8, "en"), midia.Audio("AC3", 6, "pt")], 2)
+
+
+class _ConfirmacaoFalsa:
+    """Troca o DialogoConfirmar para capturar os avisos que seriam mostrados."""
+    capturado: dict = {}
+
+    def __init__(self, pai, linhas, destino, teste, ao_confirmar, avisos=None):
+        type(self).capturado = {"linhas": linhas, "avisos": avisos}
+
+
+def test_secao_midia_mostra_formato_audios_e_avisos(app, filme):
+    item = _pronto(app, filme)
+    app.update()
+    assert "Lendo metadados" in app.lbl_midia_video.cget("text")
+    item.definir_midia(_info_dv7())
+    app._atualizar_detalhe()
+    assert "HEVC 10-bit" in app.lbl_midia_video.cget("text") and "Dolby Vision P7" in app.lbl_midia_video.cget("text")
+    assert "TrueHD 7.1 (en)" in app.lbl_midia_audio.cget("text")
+    assert "perfil 7" in app.lbl_midia_avisos.cget("text") and app.lbl_midia_avisos.cget("text").startswith("\u26a0")
+
+
+def test_secao_midia_quando_nao_deu_para_ler(app, filme):
+    item = _pronto(app, filme)
+    item.midia_erro = "formato nao reconhecido"
+    app._atualizar_detalhe()
+    assert "Não deu para ler" in app.lbl_midia_video.cget("text") and app.lbl_midia_avisos.cget("text") == ""
+
+
+def test_leitura_em_segundo_plano_preenche_o_item_e_loga_o_aviso(app, filme, monkeypatch):
+    from cortador import midia
+    monkeypatch.setattr(midia, "ler", lambda caminho: _info_dv7())
+    item = _pronto(app, filme)
+    app._ler_midia(item)
+    assert bombear(app, lambda: item.midia is not None)
+    app.update()
+    assert "Dolby Vision P7" in app.lbl_midia_video.cget("text")
+    assert "aviso(s) de formato" in app.caixa_log.get("1.0", "end")
+
+
+def test_leitura_que_falha_vira_mensagem_e_nao_trava(app, filme, monkeypatch):
+    from cortador import midia
+
+    def ler(caminho):
+        raise midia.MidiaIlegivel("formato nao reconhecido")
+    monkeypatch.setattr(midia, "ler", ler)
+    item = _pronto(app, filme)
+    app._ler_midia(item)
+    assert bombear(app, lambda: bool(item.midia_erro))
+    app.update()
+    assert "Não deu para ler" in app.lbl_midia_video.cget("text")
+    assert app.botao_postar.cget("state") == "normal"      # metadados nao impedem postar
+
+
+def test_confirmacao_lista_os_avisos_de_formato(app, filme, monkeypatch):
+    from cortador.ui import app as app_mod
+    item = _pronto(app, filme)
+    item.definir_midia(_info_dv7())
+    monkeypatch.setattr(app_mod, "DialogoConfirmar", _ConfirmacaoFalsa)
+    app._postar_selecionado()
+    avisos = _ConfirmacaoFalsa.capturado["avisos"]
+    assert len(avisos) == 1 and "perfil 7" in avisos[0]
+
+
+def test_confirmacao_sem_aviso_nao_traz_lista(app, filme, monkeypatch):
+    from cortador.ui import app as app_mod
+    _pronto(app, filme)
+    monkeypatch.setattr(app_mod, "DialogoConfirmar", _ConfirmacaoFalsa)
+    app._postar_selecionado()
+    assert _ConfirmacaoFalsa.capturado["avisos"] == []
+
+
+def test_postar_todos_resume_os_filmes_com_aviso(app, filme, tmp_path, monkeypatch):
+    from cortador.ui import app as app_mod
+    a = _pronto(app, filme)
+    a.definir_midia(_info_dv7())
+    monkeypatch.setattr(app_mod, "DialogoConfirmar", _ConfirmacaoFalsa)
+    app._postar_todos()
+    (aviso,) = _ConfirmacaoFalsa.capturado["avisos"]
+    assert aviso.startswith("1 filme(s) com aviso de formato")
+
+
+def test_dialogo_de_confirmacao_mostra_os_avisos(app):
+    from cortador.ui.dialogos import DialogoConfirmar
+    d = DialogoConfirmar(app, [("Filme", "X")], "-100123", True, lambda: None, avisos=["Dolby Vision perfil 7 ..."])
+    app.update()
+    textos = []
+
+    def varrer(w):
+        for f in w.winfo_children():
+            try:
+                textos.append(f.cget("text"))
+            except Exception:  # noqa: BLE001
+                pass
+            varrer(f)
+    varrer(d)
+    d.destroy()
+    assert any("Dolby Vision perfil 7" in t for t in textos)
+
+
 def test_sem_conexao_com_o_telegram_nao_deixa_postar(app, filme):
     _pronto(app, filme)
     app._telegram_ok = False

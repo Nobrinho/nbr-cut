@@ -34,6 +34,8 @@ class Enviador(Protocol):
         como_video: bool,
         progresso: Progresso,
         duracao_s: int | None,
+        largura: int = 0,
+        altura: int = 0,
     ) -> int:
         """Sobe a parte (lida do original) e devolve o id da mensagem."""
 
@@ -233,9 +235,11 @@ class Publicador:
             self.emitir(Evento("progresso", parte=parte.indice, total_partes=job.total_partes,
                                feito=feito, total=total))
 
-        duracao = int(job.dados_tmdb.get("duracao") or 0) * 60 or None
+        # Duração real do arquivo quando foi lida; senão a do TMDB (em minutos).
+        duracao = job.duracao_s or int(job.dados_tmdb.get("duracao") or 0) * 60 or None
         parte.message_id = await self.enviador.enviar_parte(
-            parte, job.origem, legenda_da_parte, unica, progresso, duracao
+            parte, job.origem, legenda_da_parte, unica, progresso, duracao,
+            largura=job.largura, altura=job.altura,
         )
         self.emitir(Evento("parte_ok", parte=parte.indice, total_partes=job.total_partes,
                            mensagem=parte.nome, dados={"message_id": parte.message_id}))

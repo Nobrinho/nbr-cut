@@ -292,8 +292,10 @@ class DialogoLogin(_Janela):
 class DialogoConfirmar(_Janela):
     """Última chance antes de subir qualquer byte: mostra o que será postado e ONDE."""
 
-    def __init__(self, pai, linhas: list[tuple[str, str]], destino: str, teste: bool, ao_confirmar: Callable[[], None]):
-        super().__init__(pai, "Confirmar postagem", 560, 120 + 28 * len(linhas) + 70)
+    def __init__(self, pai, linhas: list[tuple[str, str]], destino: str, teste: bool, ao_confirmar: Callable[[], None],
+                 avisos: list[str] | None = None):
+        avisos = avisos or []
+        super().__init__(pai, "Confirmar postagem", 560, 120 + 28 * len(linhas) + 70 + sum(22 + 17 * (len(a) // 62 + 1) for a in avisos))
         corpo = ctk.CTkFrame(self, fg_color="transparent")
         corpo.pack(fill="both", expand=True, padx=22, pady=18)
         _titulo(corpo, "Postar este filme?").pack(anchor="w", pady=(0, 10))
@@ -303,6 +305,9 @@ class DialogoConfirmar(_Janela):
             ctk.CTkLabel(linha, text=rotulo, width=110, anchor="w", text_color=tema.TEXTO_SUAVE).pack(side="left")
             ctk.CTkLabel(linha, text=valor, anchor="w", justify="left", wraplength=400,
                          text_color=tema.TEXTO).pack(side="left", fill="x", expand=True)
+        for texto in avisos:
+            ctk.CTkLabel(corpo, text="⚠ " + texto, text_color=tema.ALERTA, wraplength=500, justify="left",
+                         anchor="w").pack(anchor="w", pady=(10, 0))
         aviso_cor = tema.ALERTA if teste else tema.SUCESSO
         aviso = f"Será publicado no canal de {'TESTE' if teste else 'PRODUÇÃO'}: {destino}"
         ctk.CTkLabel(corpo, text=aviso, text_color=aviso_cor, font=ctk.CTkFont(weight="bold"),

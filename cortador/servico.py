@@ -94,6 +94,9 @@ class Servico:
             qualidade=item.qualidade,
             canal=self.cfg.canal_ativo,
             maximo=self.cfg.tamanho_parte,
+            duracao_s=item.duracao_real_s,
+            largura=item.midia.video.largura if item.midia and item.midia.video else 0,
+            altura=item.midia.video.altura if item.midia and item.midia.video else 0,
         )
 
     async def publicador(self, emitir: Callable[[Evento], None]) -> Publicador:

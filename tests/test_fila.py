@@ -6,7 +6,7 @@ import time
 import pytest
 
 from cortador import config as cfg_mod
-from cortador import divisao, execucao, servico
+from cortador import divisao, execucao, midia, servico
 from cortador.fila import ItemFila, PRONTO, NOVO, eh_video
 
 MIB = 1024 * 1024
@@ -236,3 +236,60 @@ def test_cancelamento_e_uma_bandeira_compartilhada():
     assert c() is True
     c.zerar()
     assert c() is False
+
+
+# ====================================================================== metadados do arquivo
+
+def _info(**kw):
+    video = midia.Video("HEVC", 3840, 2160, 23.976, 10, None, 7, 6, True)
+    return midia.InfoMidia("mkv", 9_318.3, video, [midia.Audio("AC3", 6, "pt")], **kw)
+
+
+def test_midia_preenche_a_qualidade_quando_o_nome_nao_dizia(tmp_path):
+    caminho = tmp_path / "Cidade.de.Deus.2002.mkv"
+    caminho.write_bytes(b"x")
+    item = ItemFila.criar(str(caminho))
+    item.escolher_filme({**DADOS, "titulo": "Cidade de Deus", "ano": "2002"})
+    assert item.qualidade is None
+    item.definir_midia(_info())
+    assert item.qualidade == "2160p, HDR"
+    assert item.nome_final == "Cidade de Deus (2002) [2160p].mkv"   # o nome usa só o 1º termo
+
+
+def test_midia_nao_mexe_na_qualidade_do_nome_nem_no_nome_editado(filme):
+    item = ItemFila.criar(filme)
+    item.escolher_filme(DADOS)
+    item.definir_nome("Meu Nome.mkv")
+    item.definir_midia(_info())
+    assert item.qualidade == "2160p, WEB-DL, DUAL"      # ja vinha do nome do arquivo
+    assert item.nome_final == "Meu Nome.mkv"
+
+
+def test_midia_sem_filme_escolhido_so_guarda(tmp_path):
+    caminho = tmp_path / "Sem.Qualidade.2020.mkv"
+    caminho.write_bytes(b"x")
+    item = ItemFila.criar(str(caminho))
+    item.definir_midia(_info())
+    assert item.qualidade == "2160p, HDR" and item.nome_final == ""
+
+
+def test_avisos_e_duracao_real(filme):
+    item = ItemFila.criar(filme)
+    assert item.avisos_midia() == [] and item.duracao_real_s is None
+    item.definir_midia(_info())
+    assert item.duracao_real_s == 9_318
+    assert any(a.nivel == midia.ATENCAO and "perfil 7" in a.texto for a in item.avisos_midia())
+
+
+def test_servico_leva_duracao_e_dimensoes_para_o_job(filme, tmp_path):
+    item = ItemFila.criar(filme)
+    item.escolher_filme(DADOS)
+    item.definir_midia(_info())
+    cfg = cfg_mod.Configuracao(canal_destino="-100123", modo_teste=False, pasta_jobs=str(tmp_path / "jobs"))
+    cfg.tamanho_parte = 3_000
+    job = servico.Servico(cfg).novo_job(item)
+    assert (job.duracao_s, job.largura, job.altura) == (9_318, 3840, 2160)
+    sem = ItemFila.criar(filme)
+    sem.escolher_filme(DADOS)
+    job2 = servico.Servico(cfg).novo_job(sem)
+    assert (job2.duracao_s, job2.largura, job2.altura) == (None, 0, 0)

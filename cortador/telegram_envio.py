@@ -52,6 +52,8 @@ def montar_media(
     *,
     como_video: bool,
     duracao_s: int | None,
+    largura: int = 0,
+    altura: int = 0,
 ) -> types.InputMediaUploadedDocument:
     """Mídia do arquivo já subido. Parte de filme dividido = DOCUMENTO sem tipo de vídeo (o Telegram
     não deve tratar um pedaço de arquivo como vídeo). Arquivo único = VÍDEO com atributo de vídeo,
@@ -59,7 +61,7 @@ def montar_media(
     atributos: list = [types.DocumentAttributeFilename(file_name=nome)]
     if como_video:
         atributos.insert(0, types.DocumentAttributeVideo(
-            duration=int(duracao_s or 0), w=0, h=0, supports_streaming=True,
+            duration=int(duracao_s or 0), w=int(largura or 0), h=int(altura or 0), supports_streaming=True,
         ))
         return types.InputMediaUploadedDocument(
             file=arquivo, mime_type=mime_do_nome(nome), attributes=atributos, force_file=False,
@@ -112,9 +114,12 @@ class EnviadorTelethon:
         como_video: bool,
         progresso: Progresso,
         duracao_s: int | None,
+        largura: int = 0,
+        altura: int = 0,
     ) -> int:
         arquivo = await self._subir(caminho, parte.offset, parte.tamanho, parte.nome, progresso)
-        media = montar_media(arquivo, parte.nome, como_video=como_video, duracao_s=duracao_s)
+        media = montar_media(arquivo, parte.nome, como_video=como_video, duracao_s=duracao_s,
+                             largura=largura, altura=altura)
         mensagem = await self._com_retry(
             lambda: self.cliente.send_file(self.entidade, media, caption=legenda)
         )

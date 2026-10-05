@@ -27,6 +27,7 @@ class EnviadorFalso:
     def __init__(self, falhar_na_chamada: int | None = None):
         self.chamadas: list[tuple] = []
         self.apagadas: list[int] = []
+        self.dimensoes: list[tuple[int, int]] = []
         self.existentes: set[int] | None = None  # None = todos existem
         self._id = 1000
         self._falhar = falhar_na_chamada
@@ -36,7 +37,7 @@ class EnviadorFalso:
         self._id += 1
         return self._id
 
-    async def enviar_parte(self, parte, caminho, legenda, como_video, progresso, duracao_s):
+    async def enviar_parte(self, parte, caminho, legenda, como_video, progresso, duracao_s, largura=0, altura=0):
         self._n += 1
         if self._falhar == self._n:
             self._falhar = None
@@ -44,6 +45,7 @@ class EnviadorFalso:
         progresso(parte.tamanho // 2, parte.tamanho)
         progresso(parte.tamanho, parte.tamanho)
         mid = self._novo_id()
+        self.dimensoes.append((largura, altura))
         self.chamadas.append(("parte", parte.indice, legenda, como_video, duracao_s, mid))
         return mid
 
@@ -183,6 +185,36 @@ def test_arquivo_unico_sobe_como_video_com_a_duracao_do_tmdb(ambiente):
     assert chamada[0] == "parte" and chamada[3] is True      # como_video
     assert chamada[4] == 166 * 60                            # duração em segundos, do TMDB
     assert reg.registrados[0][3] == 1
+
+
+def test_arquivo_unico_usa_duracao_e_dimensoes_reais_do_arquivo(ambiente):
+    job = ambiente["criar_job"](maximo=5_000)
+    job.duracao_s, job.largura, job.altura = 9_318, 3840, 2160
+    pub, env, _ = _publicador(ambiente)
+    _rodar(pub.executar(job))
+    assert env.chamadas[0][4] == 9_318           # vale mais que os 166 min do TMDB
+    assert env.dimensoes == [(3840, 2160)]
+
+
+def test_sem_leitura_do_arquivo_cai_na_duracao_do_tmdb_e_sem_dimensoes(ambiente):
+    job = ambiente["criar_job"](maximo=5_000)
+    assert (job.duracao_s, job.largura, job.altura) == (None, 0, 0)
+    pub, env, _ = _publicador(ambiente)
+    _rodar(pub.executar(job))
+    assert env.chamadas[0][4] == 166 * 60 and env.dimensoes == [(0, 0)]
+
+
+def test_job_salvo_antes_dos_metadados_ainda_carrega(ambiente):
+    import json
+    job = ambiente["criar_job"]()
+    ambiente["repo"].salvar(job)
+    caminho = ambiente["repo"]._caminho(job.id)
+    dados = json.loads(caminho.read_text(encoding="utf-8"))
+    for chave in ("duracao_s", "largura", "altura"):
+        dados.pop(chave)                         # formato gravado pela versao anterior
+    caminho.write_text(json.dumps(dados), encoding="utf-8")
+    carregado = ambiente["repo"].carregar(job.id)
+    assert (carregado.duracao_s, carregado.largura, carregado.altura) == (None, 0, 0)
 
 
 def test_arquivo_unico_com_legenda_longa_manda_texto_e_depois_o_video(ambiente):

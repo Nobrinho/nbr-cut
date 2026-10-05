@@ -20,7 +20,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from cortador import __version__, busca, divisao, execucao, registro
+from cortador import __version__, busca, divisao, execucao, midia, registro
 from cortador import config as config_mod
 from cortador.config import Configuracao
 from cortador.fila import (CANCELADO, CONCLUIDO, ENVIANDO, ERRO, NOVO, PRONTO, ItemFila, eh_video)
@@ -202,6 +202,15 @@ class Aplicativo(ctk.CTk):
         self.lbl_arquivo.pack(anchor="w")
         self.lbl_arquivo_info = _txt(interno, "", text_color=tema.TEXTO_SUAVE)
         self.lbl_arquivo_info.pack(anchor="w")
+
+        # --- o que o arquivo contém (lido do próprio arquivo) e avisos de compatibilidade
+        _, interno = _secao(self.conteudo, "MÍDIA")
+        self.lbl_midia_video = _txt(interno, "", font=ctk.CTkFont(weight="bold"), wraplength=680)
+        self.lbl_midia_video.pack(anchor="w")
+        self.lbl_midia_audio = _txt(interno, "", text_color=tema.TEXTO_SUAVE, wraplength=680, justify="left")
+        self.lbl_midia_audio.pack(anchor="w")
+        self.lbl_midia_avisos = _txt(interno, "", wraplength=680, justify="left")
+        self.lbl_midia_avisos.pack(anchor="w", pady=(6, 0))
 
         # --- busca no TMDB
         _, interno = _secao(self.conteudo, "FILME NO TMDB")
@@ -499,7 +508,29 @@ class Aplicativo(ctk.CTk):
         if novos:
             self._selecionar(novos[0])
             for item in novos:
+                self._ler_midia(item)
                 self._buscar(item, automatico=True)
+
+    def _ler_midia(self, item: ItemFila) -> None:
+        """Lê codec/HDR/áudios do arquivo (poucos MB) sem travar a janela."""
+        def tarefa():
+            return midia.ler(item.caminho)
+
+        def pronto(info) -> None:
+            item.definir_midia(info)
+            atencoes = [a for a in item.avisos_midia() if a.nivel == midia.ATENCAO]
+            if atencoes:
+                self.log(f"⚠ {item.nome_original}: {len(atencoes)} aviso(s) de formato (veja a seção MÍDIA)", tema.ALERTA)
+            if item in self.itens and item is self.sel:
+                self._atualizar_detalhe()
+
+        def falha(erro: BaseException) -> None:
+            item.midia_erro = str(erro)
+            self.log(f"Não consegui ler os metadados de {item.nome_original}: {erro}")
+            if item in self.itens and item is self.sel:
+                self._atualizar_detalhe()
+
+        self._em_segundo_plano(tarefa, pronto, falha)
 
     def _remover(self) -> None:
         item = self.sel
@@ -674,6 +705,7 @@ class Aplicativo(ctk.CTk):
 
         self.lbl_arquivo.configure(text=item.nome_original)
         self.lbl_arquivo_info.configure(text=f"{divisao.humano(item.tamanho)} · {os.path.dirname(item.caminho)}")
+        self._atualizar_midia(item)
         if not self._foco_em(self.entrada_titulo):
             self.var_titulo.set(item.termo_busca)
             self.var_ano.set(item.ano_busca or "")
@@ -716,6 +748,21 @@ class Aplicativo(ctk.CTk):
         destino = f"{'TESTE' if self.cfg.modo_teste else 'produção'}: {self.cfg.canal_ativo or '—'}"
         self.lbl_destino.configure(text=f"Destino → {destino}",
                                    text_color=tema.ALERTA if self.cfg.modo_teste else tema.TEXTO_SUAVE)
+
+    def _atualizar_midia(self, item: ItemFila) -> None:
+        if item.midia is None:
+            texto = f"Não deu para ler os metadados: {item.midia_erro}" if item.midia_erro else "Lendo metadados do arquivo…"
+            self.lbl_midia_video.configure(text=texto, text_color=tema.TEXTO_SUAVE if not item.midia_erro else tema.ALERTA)
+            self.lbl_midia_audio.configure(text="")
+            self.lbl_midia_avisos.configure(text="")
+            return
+        self.lbl_midia_video.configure(text=item.midia.resumo_video(), text_color=tema.TEXTO)
+        self.lbl_midia_audio.configure(text=item.midia.resumo_audio())
+        avisos = item.avisos_midia()
+        self.lbl_midia_avisos.configure(
+            text="\n".join(("⚠ " if a.nivel == midia.ATENCAO else "ℹ ") + a.texto for a in avisos),
+            text_color=tema.ALERTA if any(a.nivel == midia.ATENCAO for a in avisos) else tema.TEXTO_SUAVE,
+        )
 
     def _atualizar_cartao_escolhido(self, item: ItemFila) -> None:
         for filho in self.cartao_escolhido.winfo_children():
@@ -849,8 +896,9 @@ class Aplicativo(ctk.CTk):
         ]
         if retomando:
             linhas.append(("Retomada", "Só sobe o que falta (confere o canal antes)."))
+        avisos = [a.texto for a in item.avisos_midia() if a.nivel == midia.ATENCAO]
         DialogoConfirmar(self, linhas, str(self.cfg.canal_ativo), self.cfg.modo_teste,
-                         lambda: self._iniciar_postagem([item]))
+                         lambda: self._iniciar_postagem([item]), avisos=avisos)
 
     def _postar_todos(self) -> None:
         prontos = [i for i in self.itens if i.estado == PRONTO]
@@ -864,8 +912,11 @@ class Aplicativo(ctk.CTk):
                 return
         linhas = [("Filmes", f"{len(prontos)} filmes na fila"),
                   ("Primeiro", prontos[0].nome_final), ("Ordem", "um de cada vez, na ordem da fila")]
+        com_aviso = [i for i in prontos if any(a.nivel == midia.ATENCAO for a in i.avisos_midia())]
+        avisos = [f"{len(com_aviso)} filme(s) com aviso de formato: " + ", ".join(i.nome_final for i in com_aviso[:3])
+                  + (" …" if len(com_aviso) > 3 else "") + ". Confira a seção MÍDIA de cada um."] if com_aviso else []
         DialogoConfirmar(self, linhas, str(self.cfg.canal_ativo), self.cfg.modo_teste,
-                         lambda: self._iniciar_postagem(prontos))
+                         lambda: self._iniciar_postagem(prontos), avisos=avisos)
 
     def _problemas_para_postar(self, item: ItemFila, ignorar_duplicidade: bool = False) -> list[str]:
         problemas = list(self.cfg.problemas())

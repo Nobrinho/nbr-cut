@@ -12,6 +12,19 @@ App Windows para **cortar, padronizar e postar filmes direto no canal**, sem man
 Também: **Só cortar…** (grava as partes numa pasta para envio manual), **Postar todos os prontos** e
 **Envios interrompidos** (retoma ou descarta o que ficou pela metade).
 
+## Metadados do arquivo e avisos de formato
+
+Ao adicionar um filme o app lê o próprio arquivo (só alguns MB, sem ffprobe) e mostra a seção **MÍDIA**: resolução,
+codec, profundidade de cor, HDR/**Dolby Vision (e o perfil)**, fps, duração e a lista de áudios/legendas. Funciona
+com MKV (cabeçalho EBML) e MP4/MOV (caixa `moov`, mesmo no fim do arquivo).
+
+- **Avisos** antes de postar, para formatos que o Nbr PLAY não toca bem em todo aparelho: Dolby Vision perfil 7
+  (toca só a camada base HDR10) e perfil 5 (cores distorcidas), AV1, VC-1/MPEG-2, H.264 de 10 bits, bitrate médio
+  acima de 50 Mbps e arquivo sem vídeo/áudio. Os de atenção reaparecem na janela de confirmação; nenhum bloqueia o envio.
+- **Qualidade**: se o nome do arquivo não dizia, o app preenche com o que leu (ex.: `2160p, HDR`).
+- **Arquivo único** sobe como vídeo com a duração e a largura/altura reais (e não só a duração do TMDB).
+- Se o arquivo não puder ser lido, o app avisa na seção e segue normalmente.
+
 ## Independente do bot
 
 O app **não importa nada** do repositório do bot (`agente_filmes`). O que ele compartilha com o bot é um

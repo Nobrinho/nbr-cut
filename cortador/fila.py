@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from cortador import divisao, nomes
+from cortador import divisao, midia as midia_mod, nomes
 from cortador.busca import Candidato
 from cortador.compartilhado.legenda import LIMITE_LEGENDA_MIDIA, montar_legenda_filme
 
@@ -44,6 +44,9 @@ class ItemFila:
     duplicado: dict | None = None
     # Aviso informativo (ex.: não deu para checar a duplicidade porque o banco está fora do ar).
     aviso: str = ""
+    # Metadados lidos do arquivo (codec, HDR/Dolby Vision, áudios...); None até a leitura terminar.
+    midia: midia_mod.InfoMidia | None = None
+    midia_erro: str = ""
 
     @classmethod
     def criar(cls, caminho: str) -> "ItemFila":
@@ -67,6 +70,24 @@ class ItemFila:
     @property
     def extensao(self) -> str:
         return nomes.extensao_de(self.caminho)
+
+    # ------------------------------------------------------------------ metadados do arquivo
+
+    def definir_midia(self, info: midia_mod.InfoMidia) -> None:
+        """Guarda o que foi lido do arquivo. A qualidade só é preenchida se o nome do arquivo não informava."""
+        self.midia = info
+        self.midia_erro = ""
+        if self.qualidade is None and info.qualidade_sugerida:
+            self.qualidade = info.qualidade_sugerida
+            if self.dados and not self.nome_editado:
+                self.nome_final = self.nome_sugerido()
+
+    def avisos_midia(self) -> list[midia_mod.Aviso]:
+        return midia_mod.avaliar(self.midia, self.tamanho) if self.midia else []
+
+    @property
+    def duracao_real_s(self) -> int | None:
+        return int(self.midia.duracao_s) if self.midia and self.midia.duracao_s else None
 
     # ------------------------------------------------------------------ escolha do filme
 
