@@ -793,7 +793,13 @@ class Aplicativo(ctk.CTk):
         self.barra_total.set(0)
         self.lbl_parte.configure(text="Gravando as partes…")
 
+        ultimo = [0.0]
+
         def progresso(feito: int, total: int) -> None:
+            agora = time.monotonic()  # a tela só precisa de ~5 atualizações por segundo
+            if feito < total and agora - ultimo[0] < 0.2:
+                return
+            ultimo[0] = agora
             self.despachar(lambda: self._mostrar_progresso_corte(feito, total))
 
         def tarefa():
@@ -907,7 +913,14 @@ class Aplicativo(ctk.CTk):
         self._atualizar_fila()
         self._atualizar_detalhe()
 
+        ultimo = [0.0]
+
         def emitir(evento: Evento) -> None:
+            if evento.tipo == "progresso":  # centenas por segundo: a tela só precisa de ~5
+                agora = time.monotonic()
+                if evento.feito < evento.total and agora - ultimo[0] < 0.2:
+                    return
+                ultimo[0] = agora
             self.despachar(lambda: self._evento(item, job, evento))
 
         futuro = self.loop.rodar(self.servico.postar(job, emitir, self.cancelamento))

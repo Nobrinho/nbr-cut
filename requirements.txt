@@ -7,5 +7,5 @@ psycopg[binary]>=3.2
 filelock>=3.16,<4
 pillow>=10
 
-# Opcional: acelera a criptografia do upload (sem ele o Telethon usa Python puro, bem mais lento).
-# cryptg>=0.4
+# Criptografia do upload em C: sem ele o Telethon usa Python puro, que satura a CPU e trava a janela.
+cryptg>=0.4
